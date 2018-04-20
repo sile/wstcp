@@ -4,12 +4,14 @@ version = "0.1.0"
 authors = ["Takeru Ohta <phjgt308@gmail.com>"]
 
 [dependencies]
+base64 = "0.9"
 bytecodec = "0.2"
 byteorder = "1"
 clap = "2"
 fibers = "0.1"
 futures = "0.1"
-httpcodec = {path = "../httpcodec/"}
+httpcodec = "0.1"
+sha-1 = "0.7"
 slog = "2"
 sloggers = "0.2"
 trackable = "0.2"

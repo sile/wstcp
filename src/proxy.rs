@@ -1,14 +1,21 @@
+use std::mem;
 use std::net::SocketAddr;
-use bytecodec::io::{IoDecodeExt, ReadBuf};
+use base64::encode;
+use bytecodec::{Encode, EncodeExt};
+use bytecodec::io::{IoDecodeExt, IoEncodeExt, ReadBuf, WriteBuf};
 use fibers::Spawn;
 use fibers::net::{TcpListener, TcpStream};
 use fibers::net::futures::{Connected, TcpListenerBind};
 use fibers::net::streams::Incoming;
 use futures::{Async, Future, Poll, Stream};
-use httpcodec::{HeadBodyDecoder, Request, RequestDecoder};
+use httpcodec::{HeaderField, NoBodyDecoder, NoBodyEncoder, ReasonPhrase, Request, RequestDecoder,
+                Response, ResponseEncoder, StatusCode};
+use sha1::{Digest, Sha1};
 use slog::Logger;
 
 use {Error, ErrorKind, Result};
+
+const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 #[derive(Debug)]
 pub struct ProxyServer<S> {
@@ -81,7 +88,7 @@ impl<S: Spawn> Future for ProxyServer<S> {
                 Ok(Async::Ready(stream)) => {
                     let (addr, _) = self.connected.swap_remove(i);
                     let logger = self.logger.new(o!("client_addr" => addr.to_string()));
-                    let channel = ProxyChannel::new(stream);
+                    let channel = ProxyChannel::new(logger.clone(), stream);
                     self.spawner.spawn(channel.then(move |result| match result {
                         Err(e) => {
                             warn!(logger, "Proxy channel aborted: {}", e);
@@ -128,22 +135,32 @@ impl Stream for Listener {
 }
 
 #[derive(Debug)]
+enum Handshake {
+    RecvRequest(RequestDecoder<NoBodyDecoder>),
+    SendResponse(ResponseEncoder<NoBodyEncoder>),
+    Done,
+}
+
+#[derive(Debug)]
 struct ProxyChannel {
+    logger: Logger,
     stream: TcpStream,
     rbuf: ReadBuf<Vec<u8>>,
-    request: RequestDecoder<HeadBodyDecoder>,
+    wbuf: WriteBuf<Vec<u8>>,
+    handshake: Handshake,
 }
 impl ProxyChannel {
-    fn new(stream: TcpStream) -> Self {
+    fn new(logger: Logger, stream: TcpStream) -> Self {
         ProxyChannel {
+            logger,
             stream,
             rbuf: ReadBuf::new(vec![0; 1024]),
-            request: RequestDecoder::default(),
+            wbuf: WriteBuf::new(vec![0; 1024]),
+            handshake: Handshake::RecvRequest(RequestDecoder::default()),
         }
     }
 
-    fn handle_handshake(&mut self, request: &Request<()>) -> Result<()> {
-        // TODO: error response
+    fn handle_handshake_request(&mut self, request: &Request<()>) -> Result<Response<()>> {
         let mut key = None;
         for field in request.header().fields() {
             let name = field.name();
@@ -162,6 +179,60 @@ impl ProxyChannel {
         }
 
         let key = track_assert_some!(key, ErrorKind::InvalidInput);
+        let hash = accept_hash(&key);
+
+        let mut response = Response::new(
+            request.http_version(),
+            StatusCode::new(101)?,
+            ReasonPhrase::new("Switching Protocols")?,
+            (),
+        );
+        response
+            .header_mut()
+            .add_field(HeaderField::new("Upgrade", "websocket")?)
+            .add_field(HeaderField::new("Connection", "Upgrade")?)
+            .add_field(HeaderField::new("Sec-WebSocket-Accept", &hash)?);
+        Ok(response)
+    }
+
+    fn poll_handshake(&mut self) -> Result<()> {
+        loop {
+            match mem::replace(&mut self.handshake, Handshake::Done) {
+                Handshake::RecvRequest(mut d) => {
+                    if let Some(request) = track!(d.decode_from_read_buf(&mut self.rbuf))? {
+                        debug!(self.logger, "Method: {}", request.method());
+                        debug!(self.logger, "Target: {}", request.request_target());
+                        debug!(self.logger, "Version: {}", request.http_version());
+                        debug!(
+                            self.logger,
+                            "Header: {:?}",
+                            request.header().fields().collect::<Vec<_>>()
+                        );
+
+                        // TODO: return error response when fails
+                        let response = track!(self.handle_handshake_request(&request))?;
+                        let encoder = track!(ResponseEncoder::with_item(response))?;
+                        self.handshake = Handshake::SendResponse(encoder);
+                    } else {
+                        self.handshake = Handshake::RecvRequest(d);
+                        break;
+                    }
+                }
+                Handshake::SendResponse(mut e) => {
+                    track!(e.encode_to_write_buf(&mut self.wbuf))?;
+                    if e.is_idle() {
+                        debug!(self.logger, "Write handshake response");
+                        self.handshake = Handshake::Done;
+                    } else {
+                        self.handshake = Handshake::SendResponse(e);
+                    }
+                    break;
+                }
+                Handshake::Done => {
+                    break;
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -171,22 +242,32 @@ impl Future for ProxyChannel {
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
-            // receive
             track!(self.rbuf.fill(&mut self.stream))?;
-            if let Some(request) = track!(self.request.decode_from_read_buf(&mut self.rbuf))? {
-                println!("{:?}", request);
-                println!("# {:?}", request.method());
-                println!("# {:?}", request.request_target());
-                println!("# {:?}", request.http_version());
-                println!("# {:?}", request.header().fields().collect::<Vec<_>>());
-                track!(self.handle_handshake(&request))?;
-            }
-            if self.rbuf.stream_state().is_eos() {
+            track!(self.poll_handshake())?;
+            if self.rbuf.stream_state().is_eos() || self.wbuf.stream_state().is_eos() {
                 return Ok(Async::Ready(()));
             }
-            if self.rbuf.stream_state().would_block() {
+            if self.rbuf.stream_state().would_block() && self.wbuf.stream_state().would_block() {
                 return Ok(Async::NotReady);
             }
         }
+    }
+}
+
+fn accept_hash(key: &str) -> String {
+    let mut sh = Sha1::default();
+    sh.input(format!("{}{}", key, GUID).as_bytes());
+    let output = sh.result();
+    encode(&output)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn it_works() {
+        let hash = accept_hash("dGhlIHNhbXBsZSBub25jZQ==");
+        assert_eq!(hash, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
     }
 }

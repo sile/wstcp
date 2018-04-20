@@ -1,8 +1,10 @@
+extern crate base64;
 extern crate bytecodec;
 extern crate byteorder;
 extern crate fibers;
 extern crate futures;
 extern crate httpcodec;
+extern crate sha1;
 #[macro_use]
 extern crate slog;
 #[macro_use]
