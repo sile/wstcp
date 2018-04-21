@@ -51,7 +51,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "bytecodec"
-version = "0.2.12"
+version = "0.2.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "byteorder 1.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -164,7 +164,7 @@ name = "httpcodec"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
- "bytecodec 0.2.12 (registry+https://github.com/rust-lang/crates.io-index)",
+ "bytecodec 0.2.13 (registry+https://github.com/rust-lang/crates.io-index)",
  "trackable 0.2.15 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
@@ -588,7 +588,7 @@ name = "wstcp"
 version = "0.1.0"
 dependencies = [
  "base64 0.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "bytecodec 0.2.12 (registry+https://github.com/rust-lang/crates.io-index)",
+ "bytecodec 0.2.13 (registry+https://github.com/rust-lang/crates.io-index)",
  "byteorder 1.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "clap 2.31.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "fibers 0.1.9 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -608,7 +608,7 @@ dependencies = [
 "checksum bitflags 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)" = "b3c30d3802dfb7281680d6285f2ccdaa8c2d8fee41f93805dba5c4cf50dc23cf"
 "checksum block-buffer 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)" = "a076c298b9ecdb530ed9d967e74a6027d6a7478924520acddcddc24c1c8ab3ab"
 "checksum byte-tools 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)" = "560c32574a12a89ecd91f5e742165893f86e3ab98d21f8ea548658eb9eef5f40"
-"checksum bytecodec 0.2.12 (registry+https://github.com/rust-lang/crates.io-index)" = "5b09ea6cb05cb36cef2440c77e78c230d5bed51a5cd77834e3b6bfc14b0322f0"
+"checksum bytecodec 0.2.13 (registry+https://github.com/rust-lang/crates.io-index)" = "53dbb145e660d999b706913524a36c462a0f1bdf49f89b712b2407c19ecdc23e"
 "checksum byteorder 1.2.2 (registry+https://github.com/rust-lang/crates.io-index)" = "73b5bdfe7ee3ad0b99c9801d58807a9dbc9e09196365b0203853b99889ab3c87"
 "checksum cfg-if 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)" = "d4c819a1287eb618df47cc647173c5c4c66ba19d888a6e50d605672aed3140de"
 "checksum chrono 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)" = "1cce36c92cb605414e9b824f866f5babe0a0368e39ea07393b9b63cf3844c0e6"

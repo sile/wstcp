@@ -1,6 +1,6 @@
 use bytecodec;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Opcode {
     ContinuationFrame = 0x0,
     TextFrame = 0x1,
@@ -20,5 +20,12 @@ impl Opcode {
             0xA => Opcode::Pong,
             _ => track_panic!(bytecodec::ErrorKind::InvalidInput, "Unknown opcode: {}", n),
         })
+    }
+
+    pub fn is_control(&self) -> bool {
+        match *self {
+            Opcode::ConnectionClose | Opcode::Ping | Opcode::Pong => true,
+            _ => false,
+        }
     }
 }

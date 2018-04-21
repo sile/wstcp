@@ -2,10 +2,10 @@ use std::mem;
 use std::net::SocketAddr;
 use base64::encode;
 use bytecodec::{Encode, EncodeExt};
-use bytecodec::io::{IoDecodeExt, IoEncodeExt, ReadBuf, WriteBuf};
+use bytecodec::io::{IoDecodeExt, IoEncodeExt, ReadBuf, StreamState, WriteBuf};
 use fibers::Spawn;
 use fibers::net::{TcpListener, TcpStream};
-use fibers::net::futures::{Connected, TcpListenerBind};
+use fibers::net::futures::{Connect, Connected, TcpListenerBind};
 use fibers::net::streams::Incoming;
 use futures::{Async, Future, Poll, Stream};
 use httpcodec::{HeaderField, NoBodyDecoder, NoBodyEncoder, ReasonPhrase, Request, RequestDecoder,
@@ -14,7 +14,7 @@ use sha1::{Digest, Sha1};
 use slog::Logger;
 
 use {Error, ErrorKind, Result};
-use frame::FrameDecoder;
+use frame::{FrameDecoder, FrameEncoder};
 
 const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
@@ -89,7 +89,7 @@ impl<S: Spawn> Future for ProxyServer<S> {
                 Ok(Async::Ready(stream)) => {
                     let (addr, _) = self.connected.swap_remove(i);
                     let logger = self.logger.new(o!("client_addr" => addr.to_string()));
-                    let channel = ProxyChannel::new(logger.clone(), stream);
+                    let channel = ProxyChannel::new(logger.clone(), stream, self.tcp_server_addr);
                     self.spawner.spawn(channel.then(move |result| match result {
                         Err(e) => {
                             warn!(logger, "Proxy channel aborted: {}", e);
@@ -139,37 +139,49 @@ impl Stream for Listener {
 enum Handshake {
     RecvRequest(RequestDecoder<NoBodyDecoder>),
     SendResponse(ResponseEncoder<NoBodyEncoder>),
+    ConnectToRealServer(Connect),
     Done,
 }
 impl Handshake {
-    fn has_done(&self) -> bool {
-        if let Handshake::Done = *self {
-            true
-        } else {
-            false
-        }
-    }
+    // fn has_done(&self) -> bool {
+    //     if let Handshake::Done = *self {
+    //         true
+    //     } else {
+    //         false
+    //     }
+    // }
 }
 
 #[derive(Debug)]
 struct ProxyChannel {
     logger: Logger,
     stream: TcpStream,
+    real_server: Option<TcpStream>,
+    real_server_addr: SocketAddr,
     rbuf: ReadBuf<Vec<u8>>,
     wbuf: WriteBuf<Vec<u8>>,
+
+    // TODO: delete
+    real_wbuf: WriteBuf<Vec<u8>>,
+
     handshake: Handshake,
     frame_decoder: FrameDecoder,
+    frame_encoder: FrameEncoder,
 }
 impl ProxyChannel {
-    fn new(logger: Logger, stream: TcpStream) -> Self {
+    fn new(logger: Logger, stream: TcpStream, real_server_addr: SocketAddr) -> Self {
         let _ = unsafe { stream.with_inner(|s| s.set_nodelay(true)) };
         ProxyChannel {
             logger,
             stream,
+            real_server: None,
+            real_server_addr,
             rbuf: ReadBuf::new(vec![0; 1024]),
             wbuf: WriteBuf::new(vec![0; 1024]),
+            real_wbuf: WriteBuf::new(vec![0; 1024]),
             handshake: Handshake::RecvRequest(RequestDecoder::default()),
             frame_decoder: FrameDecoder::default(),
+            frame_encoder: FrameEncoder::default(),
         }
     }
 
@@ -232,14 +244,27 @@ impl ProxyChannel {
                     }
                 }
                 Handshake::SendResponse(mut e) => {
+                    // TODO: ConnectToRealServer と順番を逆にして、失敗ならエラー応答を返す
                     track!(e.encode_to_write_buf(&mut self.wbuf))?;
                     if e.is_idle() {
                         debug!(self.logger, "Write handshake response");
-                        self.handshake = Handshake::Done;
+                        self.handshake = Handshake::ConnectToRealServer(TcpStream::connect(
+                            self.real_server_addr,
+                        ));
                     } else {
                         self.handshake = Handshake::SendResponse(e);
                     }
                     break;
+                }
+                Handshake::ConnectToRealServer(mut f) => {
+                    if let Async::Ready(stream) = track!(f.poll().map_err(Error::from))? {
+                        debug!(self.logger, "Connected to the real server");
+                        let _ = unsafe { stream.with_inner(|s| s.set_nodelay(true)) };
+                        self.handshake = Handshake::Done;
+                        self.real_server = Some(stream);
+                    } else {
+                        self.handshake = Handshake::ConnectToRealServer(f);
+                    }
                 }
                 Handshake::Done => {
                     break;
@@ -254,23 +279,39 @@ impl Future for ProxyChannel {
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        let mut real_read_stream_state = StreamState::Normal;
         loop {
             track!(self.rbuf.fill(&mut self.stream))?;
             track!(self.wbuf.flush(&mut self.stream))?;
             track!(self.poll_handshake())?;
-            if self.handshake.has_done() {
+            if let Some(mut real) = self.real_server.as_mut() {
+                real_read_stream_state =
+                    track!(self.frame_encoder.start_encoding_if_needed(&mut real))?;
+                track!(self.frame_encoder.encode_to_write_buf(&mut self.wbuf))?;
+
+                track!(self.real_wbuf.flush(&mut real))?;
                 if let Some(item) = track!(self.frame_decoder.decode_from_read_buf(&mut self.rbuf))?
                 {
                     info!(self.logger, "item={:?}", item);
                 }
+                track!(
+                    self.frame_decoder
+                        .write_decoded_payload(&mut self.real_wbuf)
+                )?;
             }
             if self.rbuf.stream_state().is_eos() || self.wbuf.stream_state().is_eos() {
+                // TODO: handle real_read_stream_state.is_eos()
                 return Ok(Async::Ready(()));
             }
 
             let read_would_block = self.rbuf.stream_state().would_block();
             let write_would_block = self.wbuf.is_empty() || self.wbuf.stream_state().would_block();
-            if read_would_block && write_would_block {
+            let real_read_would_block = real_read_stream_state.would_block();
+            let real_write_would_block =
+                self.real_wbuf.is_empty() || self.real_wbuf.stream_state().would_block();
+            if read_would_block && write_would_block && real_read_would_block
+                && real_write_would_block
+            {
                 return Ok(Async::NotReady);
             }
         }
