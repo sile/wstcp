@@ -14,6 +14,7 @@ use sha1::{Digest, Sha1};
 use slog::Logger;
 
 use {Error, ErrorKind, Result};
+use frame::FrameDecoder;
 
 const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
@@ -140,6 +141,15 @@ enum Handshake {
     SendResponse(ResponseEncoder<NoBodyEncoder>),
     Done,
 }
+impl Handshake {
+    fn has_done(&self) -> bool {
+        if let Handshake::Done = *self {
+            true
+        } else {
+            false
+        }
+    }
+}
 
 #[derive(Debug)]
 struct ProxyChannel {
@@ -148,15 +158,18 @@ struct ProxyChannel {
     rbuf: ReadBuf<Vec<u8>>,
     wbuf: WriteBuf<Vec<u8>>,
     handshake: Handshake,
+    frame_decoder: FrameDecoder,
 }
 impl ProxyChannel {
     fn new(logger: Logger, stream: TcpStream) -> Self {
+        let _ = unsafe { stream.with_inner(|s| s.set_nodelay(true)) };
         ProxyChannel {
             logger,
             stream,
             rbuf: ReadBuf::new(vec![0; 1024]),
             wbuf: WriteBuf::new(vec![0; 1024]),
             handshake: Handshake::RecvRequest(RequestDecoder::default()),
+            frame_decoder: FrameDecoder::default(),
         }
     }
 
@@ -243,11 +256,21 @@ impl Future for ProxyChannel {
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
             track!(self.rbuf.fill(&mut self.stream))?;
+            track!(self.wbuf.flush(&mut self.stream))?;
             track!(self.poll_handshake())?;
+            if self.handshake.has_done() {
+                if let Some(item) = track!(self.frame_decoder.decode_from_read_buf(&mut self.rbuf))?
+                {
+                    info!(self.logger, "item={:?}", item);
+                }
+            }
             if self.rbuf.stream_state().is_eos() || self.wbuf.stream_state().is_eos() {
                 return Ok(Async::Ready(()));
             }
-            if self.rbuf.stream_state().would_block() && self.wbuf.stream_state().would_block() {
+
+            let read_would_block = self.rbuf.stream_state().would_block();
+            let write_would_block = self.wbuf.is_empty() || self.wbuf.stream_state().would_block();
+            if read_would_block && write_would_block {
                 return Ok(Async::NotReady);
             }
         }

@@ -12,6 +12,8 @@ extern crate trackable;
 
 pub use error::{Error, ErrorKind};
 
+pub mod frame;
+pub mod opcode;
 pub mod proxy;
 
 mod error;
