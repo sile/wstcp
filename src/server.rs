@@ -85,11 +85,11 @@ impl<S: Spawn> Future for ProxyServer<S> {
                     let channel = ProxyChannel::new(logger.clone(), stream, self.real_server_addr);
                     self.spawner.spawn(channel.then(move |result| match result {
                         Err(e) => {
-                            warn!(logger, "The proxy channel aborted: {}", e);
+                            warn!(logger, "A proxy channel aborted: {}", e);
                             Ok(())
                         }
                         Ok(()) => {
-                            info!(logger, "The proxy channel terminated normally");
+                            info!(logger, "A proxy channel terminated normally");
                             Ok(())
                         }
                     }));

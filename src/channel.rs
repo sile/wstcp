@@ -1,6 +1,5 @@
 use std::mem;
 use std::net::SocketAddr;
-use base64::encode;
 use bytecodec::{Encode, EncodeExt};
 use bytecodec::io::{IoDecodeExt, IoEncodeExt, ReadBuf, StreamState, WriteBuf};
 use fibers::net::TcpStream;
@@ -8,21 +7,11 @@ use fibers::net::futures::Connect;
 use futures::{Async, Future, Poll};
 use httpcodec::{HeaderField, NoBodyDecoder, NoBodyEncoder, ReasonPhrase, Request, RequestDecoder,
                 Response, ResponseEncoder, StatusCode};
-use sha1::{Digest, Sha1};
 use slog::Logger;
 
 use {Error, ErrorKind, Result};
 use frame::{FrameDecoder, FrameEncoder};
-
-const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-
-#[derive(Debug)]
-enum Handshake {
-    RecvRequest(RequestDecoder<NoBodyDecoder>),
-    SendResponse(ResponseEncoder<NoBodyEncoder>),
-    ConnectToRealServer(Connect),
-    Done,
-}
+use util;
 
 #[derive(Debug)]
 pub struct ProxyChannel {
@@ -77,7 +66,7 @@ impl ProxyChannel {
         }
 
         let key = track_assert_some!(key, ErrorKind::InvalidInput);
-        let hash = accept_hash(&key);
+        let hash = util::calc_accept_hash(&key);
 
         let mut response = Response::new(
             request.http_version(),
@@ -192,20 +181,10 @@ impl Future for ProxyChannel {
     }
 }
 
-fn accept_hash(key: &str) -> String {
-    let mut sh = Sha1::default();
-    sh.input(format!("{}{}", key, GUID).as_bytes());
-    let output = sh.result();
-    encode(&output)
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let hash = accept_hash("dGhlIHNhbXBsZSBub25jZQ==");
-        assert_eq!(hash, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
-    }
+#[derive(Debug)]
+enum Handshake {
+    RecvRequest(RequestDecoder<NoBodyDecoder>),
+    SendResponse(ResponseEncoder<NoBodyEncoder>),
+    ConnectToRealServer(Connect),
+    Done,
 }

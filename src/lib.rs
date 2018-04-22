@@ -17,8 +17,9 @@ pub mod frame;
 pub mod opcode;
 
 mod channel;
-mod server;
 mod error;
+mod server;
+mod util;
 
 /// This crate specific `Result` type.
 pub type Result<T> = std::result::Result<T, Error>;
