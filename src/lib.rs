@@ -1,3 +1,11 @@
+//! WebSocket to TCP proxy server.
+//!
+//! # References
+//!
+//! - [RFC 6455] The WebSocket Protocol
+//!
+//! [RFC 6455]: https://tools.ietf.org/html/rfc6455
+#![warn(missing_docs)]
 extern crate base64;
 extern crate bytecodec;
 extern crate byteorder;
