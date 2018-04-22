@@ -9,32 +9,34 @@ use slog::Logger;
 use Error;
 use proxy::ProxyChannel;
 
+/// WebSocket to TCP proxy server.
 #[derive(Debug)]
 pub struct ProxyServer<S> {
     logger: Logger,
     spawner: S,
-    ws_server_addr: SocketAddr,
-    tcp_server_addr: SocketAddr,
+    proxy_addr: SocketAddr,
+    real_server_addr: SocketAddr,
     listener: Listener,
     connected: Vec<(SocketAddr, Connected)>,
 }
 impl<S> ProxyServer<S> {
+    /// Makes a new `ProxyServer` instance.
     pub fn new(
         logger: Logger,
         spawner: S,
-        ws_server_addr: SocketAddr,
-        tcp_server_addr: SocketAddr,
+        proxy_addr: SocketAddr,
+        real_server_addr: SocketAddr,
     ) -> Self {
         let logger = logger.new(
-            o!("ws_addr" => ws_server_addr.to_string(), "tcp_addr" => tcp_server_addr.to_string()),
+            o!("proxy_addr" => proxy_addr.to_string(), "server_addr" => real_server_addr.to_string()),
         );
-        info!(logger, "Starts WebSocket server");
-        let listener = Listener::Binding(TcpListener::bind(ws_server_addr));
+        info!(logger, "Starts a WebSocket proxy server");
+        let listener = Listener::Binding(TcpListener::bind(proxy_addr));
         ProxyServer {
             logger,
             spawner,
-            ws_server_addr,
-            tcp_server_addr,
+            proxy_addr,
+            real_server_addr,
             listener,
             connected: Vec::new(),
         }
@@ -53,12 +55,12 @@ impl<S: Spawn> Future for ProxyServer<S> {
                 Async::Ready(None) => {
                     warn!(
                         self.logger,
-                        "TCP socket for WebSocket server has been closed"
+                        "TCP socket for the WebSocket proxy server has been closed"
                     );
                     return Ok(Async::Ready(()));
                 }
                 Async::Ready(Some((connected, addr))) => {
-                    info!(self.logger, "New client arrived: {}", addr);
+                    debug!(self.logger, "New client arrived: {}", addr);
                     self.connected.push((addr, connected));
                 }
             }
@@ -80,14 +82,14 @@ impl<S: Spawn> Future for ProxyServer<S> {
                 Ok(Async::Ready(stream)) => {
                     let (addr, _) = self.connected.swap_remove(i);
                     let logger = self.logger.new(o!("client_addr" => addr.to_string()));
-                    let channel = ProxyChannel::new(logger.clone(), stream, self.tcp_server_addr);
+                    let channel = ProxyChannel::new(logger.clone(), stream, self.real_server_addr);
                     self.spawner.spawn(channel.then(move |result| match result {
                         Err(e) => {
-                            warn!(logger, "Proxy channel aborted: {}", e);
+                            warn!(logger, "The proxy channel aborted: {}", e);
                             Ok(())
                         }
                         Ok(()) => {
-                            info!(logger, "Proxy channel termnated");
+                            info!(logger, "The proxy channel terminated normally");
                             Ok(())
                         }
                     }));

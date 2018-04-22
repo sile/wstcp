@@ -12,6 +12,6 @@ fibers = "0.1"
 futures = "0.1"
 httpcodec = "0.1"
 sha-1 = "0.7"
-slog = "2"
+slog = {version = "2", features = ["release_max_level_debug"]}
 sloggers = "0.2"
 trackable = "0.2"
