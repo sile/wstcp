@@ -7,7 +7,7 @@ use futures::{Async, Future, Poll, Stream};
 use slog::Logger;
 
 use Error;
-use proxy::ProxyChannel;
+use channel::ProxyChannel;
 
 /// WebSocket to TCP proxy server.
 #[derive(Debug)]

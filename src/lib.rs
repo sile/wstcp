@@ -15,8 +15,8 @@ pub use server::ProxyServer;
 
 pub mod frame;
 pub mod opcode;
-pub mod proxy;
 
+mod channel;
 mod server;
 mod error;
 

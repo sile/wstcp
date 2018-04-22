@@ -43,6 +43,7 @@ pub struct ProxyChannel {
 impl ProxyChannel {
     pub fn new(logger: Logger, stream: TcpStream, real_server_addr: SocketAddr) -> Self {
         let _ = unsafe { stream.with_inner(|s| s.set_nodelay(true)) };
+        info!(logger, "New proxy channel is created");
         ProxyChannel {
             logger,
             stream,
@@ -129,7 +130,8 @@ impl ProxyChannel {
                     break;
                 }
                 Handshake::ConnectToRealServer(mut f) => {
-                    if let Async::Ready(stream) = track!(f.poll().map_err(Error::from))? {
+                    let item = track!(f.poll().map_err(Error::from), "Connecting to real server")?;
+                    if let Async::Ready(stream) = item {
                         debug!(self.logger, "Connected to the real server");
                         let _ = unsafe { stream.with_inner(|s| s.set_nodelay(true)) };
                         self.handshake = Handshake::Done;
