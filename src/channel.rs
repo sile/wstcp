@@ -28,6 +28,7 @@ pub struct ProxyChannel {
     handshake: Handshake,
     closing: Closing,
     pending_pong: Option<Vec<u8>>,
+    pending_close: Option<Frame>,
     frame_decoder: FrameDecoder,
     frame_encoder: FrameEncoder,
 }
@@ -47,6 +48,7 @@ impl ProxyChannel {
             handshake: Handshake::new(),
             closing: Closing::NotYet,
             pending_pong: None,
+            pending_close: None,
             frame_decoder: FrameDecoder::default(),
             frame_encoder: FrameEncoder::default(),
         }
@@ -189,23 +191,13 @@ impl ProxyChannel {
             }
         }
         if self.frame_encoder.is_idle() {
-            if let Closing::InProgress {
-                code,
-                ref mut server_closed,
-                ..
-            } = self.closing
-            {
-                if *server_closed == false {
-                    let reason = Vec::new();
-                    let frame = Frame::ConnectionClose { code, reason };
-                    track!(self.frame_encoder.start_encoding(frame))?;
-                    *server_closed = true;
-                }
+            if let Some(frame) = self.pending_close.take() {
+                track!(self.frame_encoder.start_encoding(frame))?;
             }
         }
 
         track!(self.frame_encoder.encode_to_write_buf(&mut self.ws_wbuf))?;
-        if self.frame_encoder.is_idle() && self.closing.is_both_closed() {
+        if self.frame_encoder.is_idle() && self.closing.is_client_closed() {
             self.closing = Closing::Closed;
         }
 
@@ -230,17 +222,9 @@ impl ProxyChannel {
                         track!(self.starts_closing(code, true))?;
                     }
                     Closing::InProgress {
-                        server_closed: false,
                         ref mut client_closed,
-                        ..
                     } => {
                         *client_closed = true;
-                    }
-                    Closing::InProgress {
-                        server_closed: true,
-                        ..
-                    } => {
-                        self.closing = Closing::Closed;
                     }
                     _ => track_panic!(ErrorKind::Other; self.closing),
                 }
@@ -260,11 +244,11 @@ impl ProxyChannel {
         self.real_stream = None;
         self.real_stream_rstate = StreamState::Eos;
         self.real_stream_wstate = StreamState::Eos;
-        self.closing = Closing::InProgress {
+        self.closing = Closing::InProgress { client_closed };
+        self.pending_close = Some(Frame::ConnectionClose {
             code,
-            client_closed,
-            server_closed: false,
-        };
+            reason: Vec::new(),
+        });
         Ok(())
     }
 
@@ -277,8 +261,10 @@ impl ProxyChannel {
     }
 
     fn would_ws_stream_block(&self) -> bool {
+        let empty_write =
+            self.ws_wbuf.is_empty() && self.pending_close.is_none() && self.pending_pong.is_none();
         self.ws_rbuf.stream_state().would_block()
-            && (self.ws_wbuf.is_empty() || self.ws_wbuf.stream_state().would_block())
+            && (empty_write || self.ws_wbuf.stream_state().would_block())
     }
 
     fn would_real_stream_block(&self) -> bool {
@@ -407,28 +393,17 @@ impl Handshake {
 #[derive(Debug, PartialEq, Eq)]
 enum Closing {
     NotYet,
-    InProgress {
-        code: u16,
-        client_closed: bool,
-        server_closed: bool,
-    },
+    InProgress { client_closed: bool },
     Closed,
 }
 impl Closing {
     fn is_not_yet(&self) -> bool {
-        Closing::NotYet == *self
+        *self == Closing::NotYet
     }
 
-    fn is_both_closed(&self) -> bool {
-        if let Closing::InProgress {
+    fn is_client_closed(&self) -> bool {
+        *self == Closing::InProgress {
             client_closed: true,
-            server_closed: true,
-            ..
-        } = *self
-        {
-            true
-        } else {
-            false
         }
     }
 }
