@@ -26,6 +26,7 @@ pub struct ProxyChannel {
     real_stream_rstate: StreamState,
     real_stream_wstate: StreamState,
     handshake: Handshake,
+    closing: Closing,
     pending_pong: Option<Vec<u8>>,
     frame_decoder: FrameDecoder,
     frame_encoder: FrameEncoder,
@@ -44,6 +45,7 @@ impl ProxyChannel {
             real_stream_rstate: StreamState::Normal,
             real_stream_wstate: StreamState::Normal,
             handshake: Handshake::new(),
+            closing: Closing::NotYet,
             pending_pong: None,
             frame_decoder: FrameDecoder::default(),
             frame_encoder: FrameEncoder::default(),
@@ -161,23 +163,17 @@ impl ProxyChannel {
     fn process_relay(&mut self) -> Result<()> {
         if let Err(e) = track!(self.handle_real_stream()) {
             warn!(self.logger, "{}", e);
-            // TODO: starts closing
+            track!(self.starts_closing(1001, false))?;
         }
         if let Err(e) = track!(self.handle_ws_stream()) {
             warn!(self.logger, "{}", e);
-            // TODO: starts closing
+            track!(self.starts_closing(1002, false))?;
         }
         Ok(())
     }
 
     fn handle_real_stream(&mut self) -> Result<()> {
         if let Some(mut stream) = self.real_stream.as_mut() {
-            if self.frame_encoder.is_idle() {
-                if let Some(data) = self.pending_pong.take() {
-                    debug!(self.logger, "Sends Ping frame: {:?}", data);
-                    track!(self.frame_encoder.start_encoding(Frame::Pong { data }))?;
-                }
-            }
             self.real_stream_rstate =
                 track!(self.frame_encoder.start_encoding_if_needed(&mut stream))?;
             self.real_stream_wstate = track!(self.frame_decoder.write_decoded_data(&mut stream))?;
@@ -186,25 +182,89 @@ impl ProxyChannel {
     }
 
     fn handle_ws_stream(&mut self) -> Result<()> {
-        track!(self.frame_encoder.encode_to_write_buf(&mut self.ws_wbuf))?;
-        if let Some(frame) = track!(self.frame_decoder.decode_from_read_buf(&mut self.ws_rbuf))? {
-            debug!(self.logger, "Received frame: {:?}", frame);
-            match frame {
-                Frame::ConnectionClose { code, reason } => {
-                    info!(
-                        self.logger,
-                        "Received Close frame: code={}, reason={:?}",
-                        code,
-                        String::from_utf8(reason)
-                    );
-                    // TODO: starts closing
-                }
-                Frame::Ping { data } => {
-                    self.pending_pong = Some(data);
-                }
-                Frame::Pong { .. } | Frame::Data => {}
+        if self.frame_encoder.is_idle() {
+            if let Some(data) = self.pending_pong.take() {
+                debug!(self.logger, "Sends Ping frame: {:?}", data);
+                track!(self.frame_encoder.start_encoding(Frame::Pong { data }))?;
             }
         }
+        if self.frame_encoder.is_idle() {
+            if let Closing::InProgress {
+                code,
+                ref mut server_closed,
+                ..
+            } = self.closing
+            {
+                if *server_closed == false {
+                    let reason = Vec::new();
+                    let frame = Frame::ConnectionClose { code, reason };
+                    track!(self.frame_encoder.start_encoding(frame))?;
+                    *server_closed = true;
+                }
+            }
+        }
+
+        track!(self.frame_encoder.encode_to_write_buf(&mut self.ws_wbuf))?;
+        if self.frame_encoder.is_idle() && self.closing.is_both_closed() {
+            self.closing = Closing::Closed;
+        }
+
+        if let Some(frame) = track!(self.frame_decoder.decode_from_read_buf(&mut self.ws_rbuf))? {
+            debug!(self.logger, "Received frame: {:?}", frame);
+            track!(self.handle_frame(frame))?;
+        }
+        Ok(())
+    }
+
+    fn handle_frame(&mut self, frame: Frame) -> Result<()> {
+        match frame {
+            Frame::ConnectionClose { code, reason } => {
+                info!(
+                    self.logger,
+                    "Received Close frame: code={}, reason={:?}",
+                    code,
+                    String::from_utf8(reason)
+                );
+                match self.closing {
+                    Closing::NotYet => {
+                        track!(self.starts_closing(code, true))?;
+                    }
+                    Closing::InProgress {
+                        server_closed: false,
+                        ref mut client_closed,
+                        ..
+                    } => {
+                        *client_closed = true;
+                    }
+                    Closing::InProgress {
+                        server_closed: true,
+                        ..
+                    } => {
+                        self.closing = Closing::Closed;
+                    }
+                    _ => track_panic!(ErrorKind::Other; self.closing),
+                }
+            }
+            Frame::Ping { data } => {
+                if self.closing.is_not_yet() {
+                    self.pending_pong = Some(data);
+                }
+            }
+            Frame::Pong { .. } | Frame::Data => {}
+        }
+        Ok(())
+    }
+
+    fn starts_closing(&mut self, code: u16, client_closed: bool) -> Result<()> {
+        track_assert_eq!(self.closing, Closing::NotYet, ErrorKind::Other);
+        self.real_stream = None;
+        self.real_stream_rstate = StreamState::Eos;
+        self.real_stream_wstate = StreamState::Eos;
+        self.closing = Closing::InProgress {
+            code,
+            client_closed,
+            server_closed: false,
+        };
         Ok(())
     }
 
@@ -252,13 +312,16 @@ impl Future for ProxyChannel {
                 continue;
             }
 
-            // WebSocket closing
-            // TODO:
+            if self.closing == Closing::Closed {
+                info!(self.logger, "WebSocket channel has been closed normally");
+                return Ok(Async::Ready(()));
+            }
 
             // Relay
             track!(self.process_relay())?;
-            if self.is_real_stream_eos() {
-                // TODO: starts closing
+            if self.is_real_stream_eos() && self.closing.is_not_yet() {
+                info!(self.logger, "TCP stream for a real server has been closed");
+                track!(self.starts_closing(1000, false))?;
             }
             if self.would_ws_stream_block() && self.would_real_stream_block() {
                 return Ok(Async::NotReady);
@@ -337,6 +400,35 @@ impl Handshake {
                 .add_field(HeaderField::new_unchecked("Content-Length", "0"));
             let encoder = ResponseEncoder::with_item(response).expect("Never fails");
             Handshake::SendResponse(encoder, false)
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Closing {
+    NotYet,
+    InProgress {
+        code: u16,
+        client_closed: bool,
+        server_closed: bool,
+    },
+    Closed,
+}
+impl Closing {
+    fn is_not_yet(&self) -> bool {
+        Closing::NotYet == *self
+    }
+
+    fn is_both_closed(&self) -> bool {
+        if let Closing::InProgress {
+            client_closed: true,
+            server_closed: true,
+            ..
+        } = *self
+        {
+            true
+        } else {
+            false
         }
     }
 }
