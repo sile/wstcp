@@ -44,6 +44,9 @@ If you have already installed [Cargo][cargo], you can install `wstcp` easily in 
 $ cargo install wstcp
 ```
 
+[cargo]: https://doc.rust-lang.org/cargo/
+[releases]: https://github.com/sile/wstcp/releases
+
 Examples
 ---------
 
