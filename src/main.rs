@@ -13,7 +13,7 @@ use futures::Future;
 use sloggers::Build;
 use sloggers::terminal::{Destination, TerminalLoggerBuilder};
 use sloggers::types::SourceLocation;
-use wstcp::proxy::ProxyServer;
+use wstcp::ProxyServer;
 
 macro_rules! try_parse {
     ($expr:expr) => { track_try_unwrap!(track_any_err!($expr.parse())) }

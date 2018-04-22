@@ -11,11 +11,13 @@ extern crate slog;
 extern crate trackable;
 
 pub use error::{Error, ErrorKind};
+pub use server::ProxyServer;
 
 pub mod frame;
 pub mod opcode;
 pub mod proxy;
 
+mod server;
 mod error;
 
 /// This crate specific `Result` type.
