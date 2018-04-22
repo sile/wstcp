@@ -19,7 +19,7 @@ mod test {
 
     #[test]
     fn it_works() {
-        let hash = calc_accept_hash("dGhlIHNhbXBsZSBub25jZQ==");
+        let hash = calc_accept_hash(&WebSocketKey("dGhlIHNhbXBsZSBub25jZQ==".to_owned()));
         assert_eq!(hash, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
     }
 }
