@@ -14,10 +14,10 @@ pub use error::{Error, ErrorKind};
 pub use server::ProxyServer;
 
 pub mod frame;
-pub mod opcode;
 
 mod channel;
 mod error;
+mod opcode;
 mod server;
 mod util;
 

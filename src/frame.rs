@@ -12,6 +12,8 @@ use opcode::Opcode;
 const FIN_FLAG: u8 = 0b1000_0000;
 const MASK_FLAG: u8 = 0b1000_0000;
 
+const BUF_SIZE: usize = 4096;
+
 #[derive(Debug)]
 pub enum Frame {
     ConnectionClose { code: u16, reason: Vec<u8> },
@@ -51,28 +53,37 @@ impl FrameEncoder {
             }
             Ok(0) => return Ok(StreamState::Eos),
             Ok(size) => {
-                let header_size;
-                let mut header = [0; 2 + 8];
-                header[0] = FIN_FLAG | (Opcode::BinaryFrame as u8);
-                if size < 126 {
-                    header[1] = size as u8;
-                    header_size = 2;
-                } else if size < 0x10000 {
-                    header[1] = 126;
-                    BigEndian::write_u16(&mut header[2..], size as u16);
-                    header_size = 4;
-                } else {
-                    header[1] = 127;
-                    BigEndian::write_u64(&mut header[2..], size as u64);
-                    header_size = 10;
-                };
-
-                track!(self.header.start_encoding(header))?;
-                self.header.set_consumable_bytes(header_size);
-                self.payload_length = size;
+                track!(self.start_encoding_header(Opcode::BinaryFrame, size))?;
             }
         }
         Ok(StreamState::Normal)
+    }
+
+    fn start_encoding_header(
+        &mut self,
+        opcode: Opcode,
+        payload_len: usize,
+    ) -> bytecodec::Result<()> {
+        let header_size;
+        let mut header = [0; 2 + 8];
+        header[0] = FIN_FLAG | (opcode as u8);
+        if payload_len < 126 {
+            header[1] = payload_len as u8;
+            header_size = 2;
+        } else if payload_len < 0x10000 {
+            header[1] = 126;
+            BigEndian::write_u16(&mut header[2..], payload_len as u16);
+            header_size = 4;
+        } else {
+            header[1] = 127;
+            BigEndian::write_u64(&mut header[2..], payload_len as u64);
+            header_size = 10;
+        };
+
+        track!(self.header.start_encoding(header))?;
+        self.header.set_consumable_bytes(header_size);
+        self.payload_length = payload_len;
+        Ok(())
     }
 }
 impl Encode for FrameEncoder {
@@ -97,20 +108,40 @@ impl Encode for FrameEncoder {
         if self.payload_offset == self.payload_length {
             self.payload_length = 0;
             self.payload_offset = 0;
-
-            // TODO:
-            self.header.set_consumable_bytes(10);
-            track!(self.header.encode(&mut [0; 10][..], Eos::new(false)))?;
+            self.header = Default::default();
         }
         Ok(offset + size)
     }
 
-    fn start_encoding(&mut self, _item: Self::Item) -> bytecodec::Result<()> {
-        unimplemented!()
+    fn start_encoding(&mut self, item: Self::Item) -> bytecodec::Result<()> {
+        track_assert!(self.is_idle(), bytecodec::ErrorKind::EncoderFull);
+        match item {
+            Frame::ConnectionClose { code, reason } => {
+                track!(self.start_encoding_header(Opcode::ConnectionClose, 2 + reason.len()))?;
+                self.payload_length = 2 + reason.len();
+                track_assert!(
+                    self.payload_length <= self.payload.len(),
+                    bytecodec::ErrorKind::InvalidInput
+                );
+                BigEndian::write_u16(&mut self.payload, code);
+                (&mut self.payload[2..][..reason.len()]).copy_from_slice(&reason);
+            }
+            Frame::Pong { data } => {
+                track!(self.start_encoding_header(Opcode::Pong, data.len()))?;
+                self.payload_length = data.len();
+                track_assert!(
+                    self.payload_length <= self.payload.len(),
+                    bytecodec::ErrorKind::InvalidInput
+                );
+                (&mut self.payload[..data.len()]).copy_from_slice(&data);
+            }
+            Frame::Ping { .. } | Frame::Data => unreachable!(),
+        }
+        Ok(())
     }
 
     fn is_idle(&self) -> bool {
-        self.payload_length == 0
+        self.header.is_idle() && self.payload_length == 0
     }
 
     fn requiring_bytes(&self) -> ByteCount {
@@ -242,17 +273,17 @@ impl Decode for FramePayloadDecoder {
                     track_assert_eq!(self.buf_start, 0, bytecodec::ErrorKind::Other);
                     track_assert!(self.buf_end >= 2, bytecodec::ErrorKind::InvalidInput);
                     let code = BigEndian::read_u16(&self.buf);
-                    let reason = Vec::from(&self.buf[2..]);
+                    let reason = Vec::from(&self.buf[2..self.buf_end]);
                     Frame::ConnectionClose { code, reason }
                 }
                 Opcode::Ping => {
                     track_assert_eq!(self.buf_start, 0, bytecodec::ErrorKind::Other);
-                    let data = Vec::from(&self.buf[..]);
+                    let data = Vec::from(&self.buf[..self.buf_end]);
                     Frame::Ping { data }
                 }
                 Opcode::Pong => {
                     track_assert_eq!(self.buf_start, 0, bytecodec::ErrorKind::Other);
-                    let data = Vec::from(&self.buf[..]);
+                    let data = Vec::from(&self.buf[..self.buf_end]);
                     Frame::Pong { data }
                 }
                 _ => {
@@ -290,7 +321,7 @@ impl Decode for FramePayloadDecoder {
 impl Default for FramePayloadDecoder {
     fn default() -> Self {
         FramePayloadDecoder {
-            buf: vec![0; 4096],
+            buf: vec![0; BUF_SIZE],
             buf_start: 0,
             buf_end: 0,
             payload_offset: 0,
