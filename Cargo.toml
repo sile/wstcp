@@ -2,6 +2,12 @@
 name = "wstcp"
 version = "0.1.0"
 authors = ["Takeru Ohta <phjgt308@gmail.com>"]
+description = "WebSocket to TCP proxy server"
+homepage = "https://github.com/sile/wstcp"
+repository = "https://github.com/sile/wstcp"
+readme = "README.md"
+keywords = ["websocket", "proxy", "tcp"]
+license = "MIT"
 
 [dependencies]
 base64 = "0.9"
