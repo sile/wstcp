@@ -4,7 +4,6 @@ use bytecodec::{self, ByteCount, Decode, Encode, Eos};
 use bytecodec::bytes::{BytesEncoder, CopyableBytesDecoder};
 use bytecodec::combinator::Slice;
 use bytecodec::io::StreamState;
-use bytecodec::marker::Never;
 use byteorder::{BigEndian, ByteOrder};
 
 use {Error, Result};
@@ -77,7 +76,7 @@ impl FrameEncoder {
     }
 }
 impl Encode for FrameEncoder {
-    type Item = Never;
+    type Item = Frame;
 
     fn encode(&mut self, buf: &mut [u8], eos: Eos) -> bytecodec::Result<usize> {
         let mut offset = 0;
@@ -107,7 +106,7 @@ impl Encode for FrameEncoder {
     }
 
     fn start_encoding(&mut self, _item: Self::Item) -> bytecodec::Result<()> {
-        unreachable!()
+        unimplemented!()
     }
 
     fn is_idle(&self) -> bool {
@@ -307,23 +306,36 @@ pub struct FrameDecoder {
     payload: FramePayloadDecoder,
 }
 impl FrameDecoder {
-    pub fn write_decoded_payload<W: Write>(&mut self, mut writer: W) -> Result<()> {
-        if self.payload
-            .header
-            .as_ref()
-            .map_or(true, |h| h.opcode.is_control())
-        {
-            return Ok(());
+    pub fn write_decoded_data<W: Write>(&mut self, mut writer: W) -> Result<StreamState> {
+        if self.is_data_empty() {
+            return Ok(StreamState::Normal);
         }
 
         let buf = &self.payload.buf[self.payload.buf_start..self.payload.buf_end];
-        let size = track!(writer.write(buf).map_err(Error::from))?;
-        self.payload.buf_start += size;
-        if self.payload.buf_start == self.payload.buf_end {
-            self.payload.buf_start = 0;
-            self.payload.buf_end = 0;
+        match writer.write(buf) {
+            Err(e) => {
+                if e.kind() == io::ErrorKind::WouldBlock {
+                    Ok(StreamState::WouldBlock)
+                } else {
+                    Err(track!(Error::from(e)))
+                }
+            }
+            Ok(0) => Ok(StreamState::Eos),
+            Ok(size) => {
+                self.payload.buf_start += size;
+                if self.payload.buf_start == self.payload.buf_end {
+                    self.payload.buf_start = 0;
+                    self.payload.buf_end = 0;
+                }
+                Ok(StreamState::Normal)
+            }
         }
-        Ok(())
+    }
+
+    pub fn is_data_empty(&self) -> bool {
+        self.payload.header.as_ref().map_or(true, |h| {
+            h.opcode.is_control() || self.payload.buf_start == self.payload.buf_end
+        })
     }
 }
 impl Decode for FrameDecoder {

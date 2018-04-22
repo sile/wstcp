@@ -10,7 +10,7 @@ use httpcodec::{HeaderField, HttpVersion, NoBodyDecoder, NoBodyEncoder, ReasonPh
 use slog::Logger;
 
 use {Error, ErrorKind, Result};
-use frame::{FrameDecoder, FrameEncoder};
+use frame::{Frame, FrameDecoder, FrameEncoder};
 use util::{self, WebSocketKey};
 
 const BUF_SIZE: usize = 4096;
@@ -23,11 +23,10 @@ pub struct ProxyChannel {
     ws_wbuf: WriteBuf<Vec<u8>>,
     real_server_addr: SocketAddr,
     real_stream: Option<TcpStream>,
-
-    // TODO: delete
-    real_wbuf: WriteBuf<Vec<u8>>,
-
+    real_stream_rstate: StreamState,
+    real_stream_wstate: StreamState,
     handshake: Handshake,
+    pending_pong: Option<Vec<u8>>,
     frame_decoder: FrameDecoder,
     frame_encoder: FrameEncoder,
 }
@@ -42,14 +41,16 @@ impl ProxyChannel {
             ws_wbuf: WriteBuf::new(vec![0; BUF_SIZE]),
             real_server_addr,
             real_stream: None,
-            real_wbuf: WriteBuf::new(vec![0; BUF_SIZE]),
+            real_stream_rstate: StreamState::Normal,
+            real_stream_wstate: StreamState::Normal,
             handshake: Handshake::new(),
+            pending_pong: None,
             frame_decoder: FrameDecoder::default(),
             frame_encoder: FrameEncoder::default(),
         }
     }
 
-    fn poll_handshake(&mut self) -> bool {
+    fn process_handshake(&mut self) -> bool {
         loop {
             match mem::replace(&mut self.handshake, Handshake::Done) {
                 Handshake::RecvRequest(mut decoder) => match track!(
@@ -157,15 +158,72 @@ impl ProxyChannel {
         Ok(WebSocketKey(key))
     }
 
+    fn process_relay(&mut self) -> Result<()> {
+        if let Err(e) = track!(self.handle_real_stream()) {
+            warn!(self.logger, "{}", e);
+            // TODO: starts closing
+        }
+        if let Err(e) = track!(self.handle_ws_stream()) {
+            warn!(self.logger, "{}", e);
+            // TODO: starts closing
+        }
+        Ok(())
+    }
+
+    fn handle_real_stream(&mut self) -> Result<()> {
+        if let Some(mut stream) = self.real_stream.as_mut() {
+            if self.frame_encoder.is_idle() {
+                if let Some(data) = self.pending_pong.take() {
+                    debug!(self.logger, "Sends Ping frame: {:?}", data);
+                    track!(self.frame_encoder.start_encoding(Frame::Pong { data }))?;
+                }
+            }
+            self.real_stream_rstate =
+                track!(self.frame_encoder.start_encoding_if_needed(&mut stream))?;
+            self.real_stream_wstate = track!(self.frame_decoder.write_decoded_data(&mut stream))?;
+        }
+        Ok(())
+    }
+
+    fn handle_ws_stream(&mut self) -> Result<()> {
+        track!(self.frame_encoder.encode_to_write_buf(&mut self.ws_wbuf))?;
+        if let Some(frame) = track!(self.frame_decoder.decode_from_read_buf(&mut self.ws_rbuf))? {
+            debug!(self.logger, "Received frame: {:?}", frame);
+            match frame {
+                Frame::ConnectionClose { code, reason } => {
+                    info!(
+                        self.logger,
+                        "Received Close frame: code={}, reason={:?}",
+                        code,
+                        String::from_utf8(reason)
+                    );
+                    // TODO: starts closing
+                }
+                Frame::Ping { data } => {
+                    self.pending_pong = Some(data);
+                }
+                Frame::Pong { .. } | Frame::Data => {}
+            }
+        }
+        Ok(())
+    }
+
     fn is_ws_stream_eos(&self) -> bool {
         self.ws_rbuf.stream_state().is_eos() || self.ws_wbuf.stream_state().is_eos()
     }
 
+    fn is_real_stream_eos(&self) -> bool {
+        self.real_stream_rstate.is_eos() || self.real_stream_wstate.is_eos()
+    }
+
     fn would_ws_stream_block(&self) -> bool {
-        let read_would_block = self.ws_rbuf.stream_state().would_block();
-        let write_would_block =
-            self.ws_wbuf.is_empty() || self.ws_wbuf.stream_state().would_block();
-        read_would_block && write_would_block
+        self.ws_rbuf.stream_state().would_block()
+            && (self.ws_wbuf.is_empty() || self.ws_wbuf.stream_state().would_block())
+    }
+
+    fn would_real_stream_block(&self) -> bool {
+        self.real_stream_rstate.would_block()
+            && (self.frame_decoder.is_data_empty() || self.real_stream_wstate.would_block())
     }
 }
 impl Future for ProxyChannel {
@@ -173,18 +231,18 @@ impl Future for ProxyChannel {
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let mut real_read_stream_state = StreamState::Normal;
         loop {
             // WebSocket TCP stream I/O
             track!(self.ws_rbuf.fill(&mut self.ws_stream))?;
             track!(self.ws_wbuf.flush(&mut self.ws_stream))?;
             if self.is_ws_stream_eos() {
+                info!(self.logger, "TCP stream for WebSocket has been closed");
                 return Ok(Async::Ready(()));
             }
 
             // WebSocket handshake
-            if !self.poll_handshake() {
-                warn!(self.logger, "The WebSocket handshake cannot be completed");
+            if !self.process_handshake() {
+                warn!(self.logger, "WebSocket handshake cannot be completed");
                 return Ok(Async::Ready(()));
             }
             if !self.handshake.done() {
@@ -194,36 +252,15 @@ impl Future for ProxyChannel {
                 continue;
             }
 
-            if let Some(mut real) = self.real_stream.as_mut() {
-                real_read_stream_state =
-                    track!(self.frame_encoder.start_encoding_if_needed(&mut real))?;
-                track!(self.frame_encoder.encode_to_write_buf(&mut self.ws_wbuf))?;
+            // WebSocket closing
+            // TODO:
 
-                track!(self.real_wbuf.flush(&mut real))?;
-                if let Some(item) =
-                    track!(self.frame_decoder.decode_from_read_buf(&mut self.ws_rbuf))?
-                {
-                    info!(self.logger, "item={:?}", item);
-                }
-                track!(
-                    self.frame_decoder
-                        .write_decoded_payload(&mut self.real_wbuf)
-                )?;
+            // Relay
+            track!(self.process_relay())?;
+            if self.is_real_stream_eos() {
+                // TODO: starts closing
             }
-            // if self.ws_rbuf.stream_state().is_eos() || self.ws_wbuf.stream_state().is_eos() {
-            //     // TODO: handle real_read_stream_state.is_eos()
-            //     return Ok(Async::Ready(()));
-            // }
-
-            let read_would_block = self.ws_rbuf.stream_state().would_block();
-            let write_would_block =
-                self.ws_wbuf.is_empty() || self.ws_wbuf.stream_state().would_block();
-            let real_read_would_block = real_read_stream_state.would_block();
-            let real_write_would_block =
-                self.real_wbuf.is_empty() || self.real_wbuf.stream_state().would_block();
-            if read_would_block && write_would_block && real_read_would_block
-                && real_write_would_block
-            {
+            if self.would_ws_stream_block() && self.would_real_stream_block() {
                 return Ok(Async::NotReady);
             }
         }
