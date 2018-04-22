@@ -24,7 +24,8 @@ fn main() {
         .version(env!("CARGO_PKG_VERSION"))
         .about(env!("CARGO_PKG_DESCRIPTION"))
         .arg(
-            Arg::with_name("TCP_SERVER_ADDR")
+            Arg::with_name("REAL_SERVER_ADDR")
+                .help("The TCP address of the real server")
                 .index(1)
                 .takes_value(true)
                 .required(true),
@@ -46,7 +47,7 @@ fn main() {
         .get_matches();
 
     let bind_addr: SocketAddr = try_parse!(matches.value_of("BIND_ADDR").unwrap());
-    let tcp_server_addr: SocketAddr = try_parse!(matches.value_of("TCP_SERVER_ADDR").unwrap());
+    let tcp_server_addr: SocketAddr = try_parse!(matches.value_of("REAL_SERVER_ADDR").unwrap());
     let log_level = try_parse!(matches.value_of("LOG_LEVEL").unwrap());
     let logger = track_try_unwrap!(
         TerminalLoggerBuilder::new()
