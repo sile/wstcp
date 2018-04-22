@@ -23,7 +23,7 @@ pub enum Frame {
 }
 
 #[derive(Debug, Clone)]
-pub struct FrameHeader {
+struct FrameHeader {
     fin_flag: bool,
     opcode: Opcode,
     mask: Option<[u8; 4]>,
@@ -38,8 +38,8 @@ pub struct FrameEncoder {
     payload_length: usize,
 }
 impl FrameEncoder {
-    pub fn start_encoding_if_needed<R: Read>(&mut self, mut reader: R) -> Result<StreamState> {
-        if self.payload_length != 0 {
+    pub fn start_encoding_data<R: Read>(&mut self, mut reader: R) -> Result<StreamState> {
+        if !self.is_idle() {
             return Ok(StreamState::Normal);
         }
 
@@ -102,8 +102,7 @@ impl Encode for FrameEncoder {
             buf.len() - offset,
             self.payload_length - self.payload_offset,
         );
-        (&mut buf[offset..][..size])
-            .copy_from_slice(&mut self.payload[self.payload_offset..][..size]);
+        (&mut buf[offset..][..size]).copy_from_slice(&self.payload[self.payload_offset..][..size]);
         self.payload_offset += size;
         if self.payload_offset == self.payload_length {
             self.payload_length = 0;
@@ -161,7 +160,7 @@ impl Default for FrameEncoder {
 }
 
 #[derive(Debug, Default)]
-pub struct FrameHeaderDecoder {
+struct FrameHeaderDecoder {
     fixed_bytes: CopyableBytesDecoder<[u8; 2]>,
     extended_bytes: CopyableBytesDecoder<ExtendedHeaderBytes>,
     header: Option<FrameHeader>,
@@ -175,7 +174,6 @@ impl Decode for FrameHeaderDecoder {
             let (size, item) = track!(self.fixed_bytes.decode(buf, eos))?;
             offset += size;
             if let Some(b) = item {
-                // TODO: check rsv flags
                 let mut header = FrameHeader {
                     fin_flag: (b[0] & FIN_FLAG) != 0,
                     opcode: track!(Opcode::from_u8(b[0] & 0b1111))?,
@@ -242,7 +240,7 @@ impl Decode for FrameHeaderDecoder {
 }
 
 #[derive(Debug)]
-pub struct FramePayloadDecoder {
+struct FramePayloadDecoder {
     buf: Vec<u8>,
     buf_start: usize,
     buf_end: usize,
@@ -399,7 +397,7 @@ impl Decode for FrameDecoder {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-pub struct ExtendedHeaderBytes {
+struct ExtendedHeaderBytes {
     bytes: [u8; 12],
     size: usize,
 }

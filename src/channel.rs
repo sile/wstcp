@@ -176,8 +176,7 @@ impl ProxyChannel {
 
     fn handle_real_stream(&mut self) -> Result<()> {
         if let Some(mut stream) = self.real_stream.as_mut() {
-            self.real_stream_rstate =
-                track!(self.frame_encoder.start_encoding_if_needed(&mut stream))?;
+            self.real_stream_rstate = track!(self.frame_encoder.start_encoding_data(&mut stream))?;
             self.real_stream_wstate = track!(self.frame_decoder.write_decoded_data(&mut stream))?;
         }
         Ok(())

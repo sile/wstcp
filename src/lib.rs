@@ -13,10 +13,9 @@ extern crate trackable;
 pub use error::{Error, ErrorKind};
 pub use server::ProxyServer;
 
-pub mod frame;
-
 mod channel;
 mod error;
+mod frame;
 mod opcode;
 mod server;
 mod util;
