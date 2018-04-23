@@ -150,7 +150,8 @@ impl ProxyChannel {
             if name.eq_ignore_ascii_case("upgrade") {
                 track_assert_eq!(value, "websocket", ErrorKind::InvalidInput);
             } else if name.eq_ignore_ascii_case("connection") {
-                track_assert_eq!(value, "Upgrade", ErrorKind::InvalidInput);
+                let mut values = value.split(',');
+                track_assert!(values.any(|v| v.trim() == "Upgrade"), ErrorKind::InvalidInput; value);
             } else if name.eq_ignore_ascii_case("sec-websocket-key") {
                 key = Some(value.to_owned());
             } else if name.eq_ignore_ascii_case("sec-websocket-version") {
