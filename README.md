@@ -15,10 +15,10 @@ Install
 A precompiled binary for Linux environment is available in the [releases] page.
 
 ```console
-$ curl -L https://github.com/sile/wstcp/releases/download/0.1.0/wstcp-0.1.0.linux -o wstcp
+$ curl -L https://github.com/sile/wstcp/releases/download/0.1.1/wstcp-0.1.1.linux -o wstcp
 $ chmod +x wstcp
 $ ./wstcp -h
-wstcp 0.1.0
+wstcp 0.1.1
 WebSocket to TCP proxy server
 
 USAGE:
