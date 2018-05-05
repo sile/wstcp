@@ -228,10 +228,6 @@ impl Decode for FrameHeaderDecoder {
         }
     }
 
-    fn is_idle(&self) -> bool {
-        self.header.is_none() && self.fixed_bytes.is_idle()
-    }
-
     fn requiring_bytes(&self) -> ByteCount {
         self.fixed_bytes
             .requiring_bytes()
@@ -302,10 +298,6 @@ impl Decode for FramePayloadDecoder {
             track_assert!(!eos.is_reached(), bytecodec::ErrorKind::UnexpectedEos);
             Ok((size, None))
         }
-    }
-
-    fn is_idle(&self) -> bool {
-        self.buf_end == 0
     }
 
     fn requiring_bytes(&self) -> ByteCount {
@@ -385,10 +377,6 @@ impl Decode for FrameDecoder {
         let (size, item) = track!(self.payload.decode(&buf[offset..], eos))?;
         offset += size;
         Ok((offset, item))
-    }
-
-    fn is_idle(&self) -> bool {
-        self.header.is_idle() && self.payload.is_idle()
     }
 
     fn requiring_bytes(&self) -> ByteCount {
