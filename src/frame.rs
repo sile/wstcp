@@ -228,8 +228,8 @@ impl Decode for FrameHeaderDecoder {
         }
     }
 
-    fn has_terminated(&self) -> bool {
-        false
+    fn is_idle(&self) -> bool {
+        self.header.is_none() && self.fixed_bytes.is_idle()
     }
 
     fn requiring_bytes(&self) -> ByteCount {
@@ -304,8 +304,8 @@ impl Decode for FramePayloadDecoder {
         }
     }
 
-    fn has_terminated(&self) -> bool {
-        false
+    fn is_idle(&self) -> bool {
+        self.buf_end == 0
     }
 
     fn requiring_bytes(&self) -> ByteCount {
@@ -387,8 +387,8 @@ impl Decode for FrameDecoder {
         Ok((offset, item))
     }
 
-    fn has_terminated(&self) -> bool {
-        self.header.has_terminated()
+    fn is_idle(&self) -> bool {
+        self.header.is_idle() && self.payload.is_idle()
     }
 
     fn requiring_bytes(&self) -> ByteCount {

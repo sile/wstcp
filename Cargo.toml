@@ -11,12 +11,12 @@ license = "MIT"
 
 [dependencies]
 base64 = "0.9"
-bytecodec = "0.2"
+bytecodec = "0.3"
 byteorder = "1"
 clap = "2"
 fibers = "0.1"
 futures = "0.1"
-httpcodec = "0.1"
+httpcodec = "0.2"
 sha-1 = "0.7"
 slog = {version = "2", features = ["release_max_level_debug"]}
 sloggers = "0.2"
