@@ -3,6 +3,7 @@ wstcp
 
 [![wstcp](http://meritbadge.herokuapp.com/wstcp)](https://crates.io/crates/wstcp)
 [![Documentation](https://docs.rs/wstcp/badge.svg)](https://docs.rs/wstcp)
+[![Build Status](https://travis-ci.org/sile/wstcp.svg?branch=master)](https://travis-ci.org/sile/wstcp)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 WebSocket to TCP proxy written in Rust.
