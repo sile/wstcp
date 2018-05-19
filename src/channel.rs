@@ -1,17 +1,17 @@
-use std::mem;
-use std::net::SocketAddr;
-use bytecodec::{Encode, EncodeExt};
 use bytecodec::io::{IoDecodeExt, IoEncodeExt, ReadBuf, StreamState, WriteBuf};
+use bytecodec::{Encode, EncodeExt};
 use fibers::net::TcpStream;
 use fibers::net::futures::Connect;
 use futures::{Async, Future, Poll};
 use httpcodec::{HeaderField, HttpVersion, NoBodyDecoder, NoBodyEncoder, ReasonPhrase, Request,
                 RequestDecoder, Response, ResponseEncoder, StatusCode};
 use slog::Logger;
+use std::mem;
+use std::net::SocketAddr;
 
-use {Error, ErrorKind, Result};
 use frame::{Frame, FrameDecoder, FrameEncoder};
 use util::{self, WebSocketKey};
+use {Error, ErrorKind, Result};
 
 const BUF_SIZE: usize = 4096;
 

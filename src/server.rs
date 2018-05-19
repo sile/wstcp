@@ -1,10 +1,10 @@
-use std::net::SocketAddr;
 use fibers::Spawn;
 use fibers::net::TcpListener;
 use fibers::net::futures::{Connected, TcpListenerBind};
 use fibers::net::streams::Incoming;
 use futures::{Async, Future, Poll, Stream};
 use slog::Logger;
+use std::net::SocketAddr;
 
 use Error;
 use channel::ProxyChannel;
