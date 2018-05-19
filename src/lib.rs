@@ -7,6 +7,7 @@
 //! [RFC 6455]: https://tools.ietf.org/html/rfc6455
 #![warn(missing_docs)]
 extern crate base64;
+#[macro_use]
 extern crate bytecodec;
 extern crate byteorder;
 extern crate fibers;

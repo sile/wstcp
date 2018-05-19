@@ -1,5 +1,5 @@
 use bytecodec::io::{IoDecodeExt, IoEncodeExt, ReadBuf, StreamState, WriteBuf};
-use bytecodec::{Encode, EncodeExt};
+use bytecodec::{Decode, Encode, EncodeExt};
 use fibers::net::TcpStream;
 use fibers::net::futures::Connect;
 use futures::{Async, Future, Poll};
@@ -57,37 +57,41 @@ impl ProxyChannel {
     fn process_handshake(&mut self) -> bool {
         loop {
             match mem::replace(&mut self.handshake, Handshake::Done) {
-                Handshake::RecvRequest(mut decoder) => match track!(
-                    decoder.decode_from_read_buf(&mut self.ws_rbuf)
-                ) {
-                    Err(e) => {
-                        warn!(self.logger, "Malformed HTTP request: {}", e);
-                        self.handshake = Handshake::response_bad_request();
-                    }
-                    Ok(None) => {
+                Handshake::RecvRequest(mut decoder) => {
+                    let result = decoder.decode_from_read_buf(&mut self.ws_rbuf);
+                    if result.is_ok() && !decoder.is_idle() {
                         self.handshake = Handshake::RecvRequest(decoder);
                         break;
                     }
-                    Ok(Some(request)) => {
-                        debug!(self.logger, "Received a WebSocket handshake request");
-                        debug!(self.logger, "Method: {}", request.method());
-                        debug!(self.logger, "Target: {}", request.request_target());
-                        debug!(self.logger, "Version: {}", request.http_version());
-                        debug!(self.logger, "Header: {}", request.header());
+                    match result.and_then(|()| decoder.finish_decoding()) {
+                        Err(e) => {
+                            warn!(self.logger, "Malformed HTTP request: {}", e);
+                            self.handshake = Handshake::response_bad_request();
+                        }
+                        Ok(request) => {
+                            debug!(self.logger, "Received a WebSocket handshake request");
+                            debug!(self.logger, "Method: {}", request.method());
+                            debug!(self.logger, "Target: {}", request.request_target());
+                            debug!(self.logger, "Version: {}", request.http_version());
+                            debug!(self.logger, "Header: {}", request.header());
 
-                        match track!(self.handle_handshake_request(&request)) {
-                            Err(e) => {
-                                warn!(self.logger, "Invalid WebSocket handshake request: {}", e);
-                                self.handshake = Handshake::response_bad_request();
-                            }
-                            Ok(key) => {
-                                debug!(self.logger, "Tries to connect the real server");
-                                let future = TcpStream::connect(self.real_server_addr);
-                                self.handshake = Handshake::ConnectToRealServer(future, key);
+                            match track!(self.handle_handshake_request(&request)) {
+                                Err(e) => {
+                                    warn!(
+                                        self.logger,
+                                        "Invalid WebSocket handshake request: {}", e
+                                    );
+                                    self.handshake = Handshake::response_bad_request();
+                                }
+                                Ok(key) => {
+                                    debug!(self.logger, "Tries to connect the real server");
+                                    let future = TcpStream::connect(self.real_server_addr);
+                                    self.handshake = Handshake::ConnectToRealServer(future, key);
+                                }
                             }
                         }
                     }
-                },
+                }
                 Handshake::ConnectToRealServer(mut f, key) => {
                     match track!(f.poll().map_err(Error::from), "Connecting to real server") {
                         Err(e) => {
@@ -201,7 +205,9 @@ impl ProxyChannel {
             self.closing = Closing::Closed;
         }
 
-        if let Some(frame) = track!(self.frame_decoder.decode_from_read_buf(&mut self.ws_rbuf))? {
+        track!(self.frame_decoder.decode_from_read_buf(&mut self.ws_rbuf))?;
+        if self.frame_decoder.is_idle() {
+            let frame = track!(self.frame_decoder.finish_decoding())?;
             debug!(self.logger, "Received frame: {:?}", frame);
             track!(self.handle_frame(frame))?;
         }

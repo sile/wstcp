@@ -29,6 +29,22 @@ struct FrameHeader {
     mask: Option<[u8; 4]>,
     payload_len: u64,
 }
+impl FrameHeader {
+    fn from_bytes(b: [u8; 2]) -> bytecodec::Result<Self> {
+        let mut header = FrameHeader {
+            fin_flag: (b[0] & FIN_FLAG) != 0,
+            opcode: track!(Opcode::from_u8(b[0] & 0b1111))?,
+            mask: None,
+            payload_len: u64::from(b[1] & 0b0111_1111),
+        };
+
+        let mask_flag = (b[1] & MASK_FLAG) != 0;
+        if mask_flag {
+            header.mask = Some([0; 4]); // dummy
+        }
+        Ok(header)
+    }
+}
 
 #[derive(Debug)]
 pub struct FrameEncoder {
@@ -164,74 +180,76 @@ struct FrameHeaderDecoder {
     fixed_bytes: CopyableBytesDecoder<[u8; 2]>,
     extended_bytes: CopyableBytesDecoder<ExtendedHeaderBytes>,
     header: Option<FrameHeader>,
+    completed: bool,
 }
 impl Decode for FrameHeaderDecoder {
     type Item = FrameHeader;
 
-    fn decode(&mut self, buf: &[u8], eos: Eos) -> bytecodec::Result<(usize, Option<Self::Item>)> {
-        let mut offset = 0;
-        if self.header.is_none() {
-            let (size, item) = track!(self.fixed_bytes.decode(buf, eos))?;
-            offset += size;
-            if let Some(b) = item {
-                let mut header = FrameHeader {
-                    fin_flag: (b[0] & FIN_FLAG) != 0,
-                    opcode: track!(Opcode::from_u8(b[0] & 0b1111))?,
-                    mask: None,
-                    payload_len: u64::from(b[1] & 0b0111_1111),
-                };
-
-                self.extended_bytes.inner_mut().size = 0;
-                let mask_flag = (b[1] & MASK_FLAG) != 0;
-                if mask_flag {
-                    self.extended_bytes.inner_mut().size = 4;
-                    header.mask = Some([0; 4]); // dummy
-                }
-
-                match header.payload_len {
-                    126 => {
-                        self.extended_bytes.inner_mut().size += 2;
-                    }
-                    127 => {
-                        self.extended_bytes.inner_mut().size += 8;
-                    }
-                    _ => {}
-                }
-                self.header = Some(header);
-            } else {
-                return Ok((offset, None));
-            }
+    fn decode(&mut self, buf: &[u8], eos: Eos) -> bytecodec::Result<usize> {
+        if self.completed {
+            return Ok(0);
         }
 
-        let (size, item) = track!(self.extended_bytes.decode(&buf[offset..], eos))?;
-        offset += size;
-        if let Some(b) = item {
-            let mut header = track_assert_some!(self.header.take(), bytecodec::ErrorKind::Other);
-            let mut bytes = &b.bytes[..];
+        let mut offset = 0;
+        if self.header.is_none() {
+            bytecodec_try_decode!(self.fixed_bytes, offset, buf, eos);
+            let b = track!(self.fixed_bytes.finish_decoding())?;
+            let header = track!(FrameHeader::from_bytes(b))?;
+
+            self.extended_bytes.inner_mut().size = 0;
+            if header.mask.is_some() {
+                self.extended_bytes.inner_mut().size = 4;
+            }
             match header.payload_len {
                 126 => {
-                    header.payload_len = u64::from(BigEndian::read_u16(bytes));
-                    bytes = &bytes[2..];
+                    self.extended_bytes.inner_mut().size += 2;
                 }
                 127 => {
-                    header.payload_len = BigEndian::read_u64(bytes);
-                    bytes = &bytes[8..];
+                    self.extended_bytes.inner_mut().size += 8;
                 }
                 _ => {}
             }
-            if header.mask.is_some() {
-                header.mask = Some([bytes[0], bytes[1], bytes[2], bytes[3]]);
-            }
-            Ok((offset, Some(header)))
-        } else {
-            Ok((offset, None))
+            self.header = Some(header);
         }
+
+        bytecodec_try_decode!(self.extended_bytes, offset, buf, eos);
+        let b = track!(self.extended_bytes.finish_decoding())?;
+        let header = self.header.as_mut().expect("Never fails");
+        let mut bytes = &b.bytes[..];
+        match header.payload_len {
+            126 => {
+                header.payload_len = u64::from(BigEndian::read_u16(bytes));
+                bytes = &bytes[2..];
+            }
+            127 => {
+                header.payload_len = BigEndian::read_u64(bytes);
+                bytes = &bytes[8..];
+            }
+            _ => {}
+        }
+        if header.mask.is_some() {
+            header.mask = Some([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        }
+        self.completed = true;
+        Ok(offset)
+    }
+
+    fn finish_decoding(&mut self) -> bytecodec::Result<Self::Item> {
+        track_assert!(self.completed, bytecodec::ErrorKind::IncompleteDecoding);
+        let header =
+            track_assert_some!(self.header.take(), bytecodec::ErrorKind::InconsistentState);
+        self.completed = false;
+        Ok(header)
     }
 
     fn requiring_bytes(&self) -> ByteCount {
-        self.fixed_bytes
-            .requiring_bytes()
-            .add_for_decoding(self.extended_bytes.requiring_bytes())
+        if self.completed {
+            ByteCount::Finite(0)
+        } else {
+            self.fixed_bytes
+                .requiring_bytes()
+                .add_for_decoding(self.extended_bytes.requiring_bytes())
+        }
     }
 }
 
@@ -247,57 +265,66 @@ struct FramePayloadDecoder {
 impl Decode for FramePayloadDecoder {
     type Item = Frame;
 
-    fn decode(&mut self, buf: &[u8], eos: Eos) -> bytecodec::Result<(usize, Option<Self::Item>)> {
-        let header = track_assert_some!(self.header.clone(), bytecodec::ErrorKind::Other);
-        let size = cmp::min(header.payload_len - self.payload_offset, buf.len() as u64) as usize;
-        let size = cmp::min(size, self.buf.len() - self.buf_end);
-        (&mut self.buf[self.buf_end..][..size]).copy_from_slice(&buf[..size]);
-        self.buf_end += size;
-        self.payload_offset += size as u64;
-        if let Some(mask) = header.mask {
-            let start = self.buf_end - size;
-            for b in &mut self.buf[start..self.buf_end] {
-                *b ^= mask[self.mask_offset];
-                self.mask_offset = (self.mask_offset + 1) % 4;
+    fn decode(&mut self, buf: &[u8], eos: Eos) -> bytecodec::Result<usize> {
+        if let Some(ref header) = self.header {
+            let size =
+                cmp::min(header.payload_len - self.payload_offset, buf.len() as u64) as usize;
+            let size = cmp::min(size, self.buf.len() - self.buf_end);
+            (&mut self.buf[self.buf_end..][..size]).copy_from_slice(&buf[..size]);
+            self.buf_end += size;
+            self.payload_offset += size as u64;
+            if let Some(mask) = header.mask {
+                let start = self.buf_end - size;
+                for b in &mut self.buf[start..self.buf_end] {
+                    *b ^= mask[self.mask_offset];
+                    self.mask_offset = (self.mask_offset + 1) % 4;
+                }
             }
-        }
-        if self.payload_offset == header.payload_len {
-            let frame = match header.opcode {
-                Opcode::ConnectionClose => {
-                    track_assert_eq!(self.buf_start, 0, bytecodec::ErrorKind::Other);
-                    track_assert!(self.buf_end >= 2, bytecodec::ErrorKind::InvalidInput);
-                    let code = BigEndian::read_u16(&self.buf);
-                    let reason = Vec::from(&self.buf[2..self.buf_end]);
-                    Frame::ConnectionClose { code, reason }
-                }
-                Opcode::Ping => {
-                    track_assert_eq!(self.buf_start, 0, bytecodec::ErrorKind::Other);
-                    let data = Vec::from(&self.buf[..self.buf_end]);
-                    Frame::Ping { data }
-                }
-                Opcode::Pong => {
-                    track_assert_eq!(self.buf_start, 0, bytecodec::ErrorKind::Other);
-                    let data = Vec::from(&self.buf[..self.buf_end]);
-                    Frame::Pong { data }
-                }
-                _ => {
-                    if self.buf_start == self.buf_end {
-                        Frame::Data
-                    } else {
-                        return Ok((size, None));
-                    }
-                }
-            };
-            self.buf_start = 0;
-            self.buf_end = 0;
-            self.payload_offset = 0;
-            self.mask_offset = 0;
-            self.header = None;
-            Ok((size, Some(frame)))
+            if self.payload_offset != header.payload_len {
+                track_assert!(!eos.is_reached(), bytecodec::ErrorKind::UnexpectedEos);
+            }
+            Ok(size)
         } else {
-            track_assert!(!eos.is_reached(), bytecodec::ErrorKind::UnexpectedEos);
-            Ok((size, None))
+            Ok(0)
         }
+    }
+
+    fn finish_decoding(&mut self) -> bytecodec::Result<Self::Item> {
+        track_assert!(self.is_idle(), bytecodec::ErrorKind::IncompleteDecoding);
+        let header =
+            track_assert_some!(self.header.take(), bytecodec::ErrorKind::InconsistentState);
+        let frame = match header.opcode {
+            Opcode::ConnectionClose => {
+                track_assert_eq!(self.buf_start, 0, bytecodec::ErrorKind::InconsistentState);
+                track_assert!(self.buf_end >= 2, bytecodec::ErrorKind::InvalidInput);
+                let code = BigEndian::read_u16(&self.buf);
+                let reason = Vec::from(&self.buf[2..self.buf_end]);
+                Frame::ConnectionClose { code, reason }
+            }
+            Opcode::Ping => {
+                track_assert_eq!(self.buf_start, 0, bytecodec::ErrorKind::InconsistentState);
+                let data = Vec::from(&self.buf[..self.buf_end]);
+                Frame::Ping { data }
+            }
+            Opcode::Pong => {
+                track_assert_eq!(self.buf_start, 0, bytecodec::ErrorKind::InconsistentState);
+                let data = Vec::from(&self.buf[..self.buf_end]);
+                Frame::Pong { data }
+            }
+            _ => {
+                track_assert_eq!(
+                    self.buf_start,
+                    self.buf_end,
+                    bytecodec::ErrorKind::InconsistentState
+                );
+                Frame::Data
+            }
+        };
+        self.buf_start = 0;
+        self.buf_end = 0;
+        self.payload_offset = 0;
+        self.mask_offset = 0;
+        Ok(frame)
     }
 
     fn requiring_bytes(&self) -> ByteCount {
@@ -305,6 +332,21 @@ impl Decode for FramePayloadDecoder {
             ByteCount::Finite(header.payload_len - self.payload_offset)
         } else {
             ByteCount::Unknown
+        }
+    }
+
+    fn is_idle(&self) -> bool {
+        if let Some(ref header) = self.header {
+            if header.payload_len == self.payload_offset {
+                match header.opcode {
+                    Opcode::ConnectionClose | Opcode::Ping | Opcode::Pong => true,
+                    _ => self.buf_start == self.buf_end,
+                }
+            } else {
+                false
+            }
+        } else {
+            false
         }
     }
 }
@@ -362,25 +404,29 @@ impl FrameDecoder {
 impl Decode for FrameDecoder {
     type Item = Frame;
 
-    fn decode(&mut self, buf: &[u8], eos: Eos) -> bytecodec::Result<(usize, Option<Self::Item>)> {
+    fn decode(&mut self, buf: &[u8], eos: Eos) -> bytecodec::Result<usize> {
         let mut offset = 0;
         if self.payload.header.is_none() {
-            let (size, item) = track!(self.header.decode(buf, eos))?;
-            offset += size;
-            if let Some(header) = item {
-                self.payload.header = Some(header);
-            } else {
-                return Ok((offset, None));
-            }
+            bytecodec_try_decode!(self.header, offset, buf, eos);
+            let header = track!(self.header.finish_decoding())?;
+            self.payload.header = Some(header);
         }
+        bytecodec_try_decode!(self.payload, offset, buf, eos);
+        Ok(offset)
+    }
 
-        let (size, item) = track!(self.payload.decode(&buf[offset..], eos))?;
-        offset += size;
-        Ok((offset, item))
+    fn finish_decoding(&mut self) -> bytecodec::Result<Self::Item> {
+        track!(self.payload.finish_decoding())
     }
 
     fn requiring_bytes(&self) -> ByteCount {
-        self.header.requiring_bytes()
+        self.header
+            .requiring_bytes()
+            .add_for_decoding(self.payload.requiring_bytes())
+    }
+
+    fn is_idle(&self) -> bool {
+        self.payload.is_idle()
     }
 }
 

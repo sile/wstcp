@@ -14,7 +14,7 @@ travis-ci = {repository = "sile/wstcp"}
 
 [dependencies]
 base64 = "0.9"
-bytecodec = "0.3"
+bytecodec = "0.4"
 byteorder = "1"
 clap = "2"
 fibers = "0.1"
