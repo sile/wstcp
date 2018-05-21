@@ -34,7 +34,7 @@ pub struct ProxyChannel {
 }
 impl ProxyChannel {
     pub fn new(logger: Logger, ws_stream: TcpStream, real_server_addr: SocketAddr) -> Self {
-        let _ = unsafe { ws_stream.with_inner(|s| s.set_nodelay(true)) };
+        let _ = ws_stream.set_nodelay(true);
         info!(logger, "New proxy channel is created");
         ProxyChannel {
             logger,
@@ -104,7 +104,7 @@ impl ProxyChannel {
                         }
                         Ok(Async::Ready(stream)) => {
                             debug!(self.logger, "Connected to the real server");
-                            let _ = unsafe { stream.with_inner(|s| s.set_nodelay(true)) };
+                            let _ = stream.set_nodelay(true);
                             if let Ok(addr) = stream.local_addr() {
                                 self.logger = self.logger.new(o!("relay_addr" => addr.to_string()));
                             }
