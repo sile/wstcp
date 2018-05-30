@@ -1,3 +1,4 @@
+#[macro_use]
 extern crate clap;
 extern crate fibers;
 extern crate futures;
@@ -6,7 +7,7 @@ extern crate sloggers;
 extern crate trackable;
 extern crate wstcp;
 
-use clap::{App, Arg};
+use clap::Arg;
 use fibers::{Executor, Spawn, ThreadPoolExecutor};
 use futures::Future;
 use sloggers::terminal::{Destination, TerminalLoggerBuilder};
@@ -22,9 +23,7 @@ macro_rules! try_parse {
 }
 
 fn main() {
-    let matches = App::new("wstcp")
-        .version(env!("CARGO_PKG_VERSION"))
-        .about(env!("CARGO_PKG_DESCRIPTION"))
+    let matches = app_from_crate!()
         .arg(
             Arg::with_name("REAL_SERVER_ADDR")
                 .help("The TCP address of the real server")
