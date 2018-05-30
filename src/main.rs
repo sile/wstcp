@@ -9,9 +9,9 @@ extern crate wstcp;
 use clap::{App, Arg};
 use fibers::{Executor, Spawn, ThreadPoolExecutor};
 use futures::Future;
-use sloggers::Build;
 use sloggers::terminal::{Destination, TerminalLoggerBuilder};
 use sloggers::types::SourceLocation;
+use sloggers::Build;
 use std::net::SocketAddr;
 use wstcp::ProxyServer;
 

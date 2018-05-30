@@ -1,7 +1,7 @@
 use bytecodec::io::{IoDecodeExt, IoEncodeExt, ReadBuf, StreamState, WriteBuf};
 use bytecodec::{Decode, Encode, EncodeExt};
-use fibers::net::TcpStream;
 use fibers::net::futures::Connect;
+use fibers::net::TcpStream;
 use futures::{Async, Future, Poll};
 use httpcodec::{HeaderField, HttpVersion, NoBodyDecoder, NoBodyEncoder, ReasonPhrase, Request,
                 RequestDecoder, Response, ResponseEncoder, StatusCode};
