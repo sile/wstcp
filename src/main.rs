@@ -13,7 +13,7 @@ use futures::Future;
 use sloggers::terminal::{Destination, TerminalLoggerBuilder};
 use sloggers::types::SourceLocation;
 use sloggers::Build;
-use std::net::SocketAddr;
+use std::net::{ToSocketAddrs, SocketAddr};
 use wstcp::ProxyServer;
 
 macro_rules! try_parse {
@@ -48,7 +48,9 @@ fn main() {
         .get_matches();
 
     let bind_addr: SocketAddr = try_parse!(matches.value_of("BIND_ADDR").unwrap());
-    let tcp_server_addr: SocketAddr = try_parse!(matches.value_of("REAL_SERVER_ADDR").unwrap());
+    let tcp_server_addr: SocketAddr = track_try_unwrap!(track_any_err!(
+        matches.value_of("REAL_SERVER_ADDR").unwrap().to_socket_addrs()
+    )).next().unwrap();
     let log_level = try_parse!(matches.value_of("LOG_LEVEL").unwrap());
     let logger = track_try_unwrap!(
         TerminalLoggerBuilder::new()
