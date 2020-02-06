@@ -3,8 +3,10 @@ use bytecodec::{Decode, Encode, EncodeExt};
 use fibers::net::futures::Connect;
 use fibers::net::TcpStream;
 use futures::{Async, Future, Poll};
-use httpcodec::{HeaderField, HttpVersion, NoBodyDecoder, NoBodyEncoder, ReasonPhrase, Request,
-                RequestDecoder, Response, ResponseEncoder, StatusCode};
+use httpcodec::{
+    HeaderField, HttpVersion, NoBodyDecoder, NoBodyEncoder, ReasonPhrase, Request, RequestDecoder,
+    Response, ResponseEncoder, StatusCode,
+};
 use slog::Logger;
 use std::mem;
 use std::net::SocketAddr;
@@ -408,8 +410,9 @@ impl Closing {
     }
 
     fn is_client_closed(&self) -> bool {
-        *self == Closing::InProgress {
-            client_closed: true,
-        }
+        *self
+            == Closing::InProgress {
+                client_closed: true,
+            }
     }
 }
