@@ -13,14 +13,14 @@ license = "MIT"
 travis-ci = {repository = "sile/wstcp"}
 
 [dependencies]
-base64 = "0.9"
+base64 = "0.11"
 bytecodec = "0.4"
 byteorder = "1"
 clap = "2"
 fibers = "0.1"
 futures = "0.1"
 httpcodec = "0.2"
-sha-1 = "0.7"
+sha-1 = "0.8"
 slog = {version = "2", features = ["release_max_level_debug"]}
-sloggers = "0.2"
+sloggers = "0.3"
 trackable = "0.2"
