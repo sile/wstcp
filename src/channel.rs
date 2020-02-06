@@ -1,3 +1,6 @@
+use crate::frame::{Frame, FrameDecoder, FrameEncoder};
+use crate::util::{self, WebSocketKey};
+use crate::{Error, ErrorKind, Result};
 use bytecodec::io::{IoDecodeExt, IoEncodeExt, ReadBuf, StreamState, WriteBuf};
 use bytecodec::{Decode, Encode, EncodeExt};
 use fibers::net::futures::Connect;
@@ -10,10 +13,6 @@ use httpcodec::{
 use slog::Logger;
 use std::mem;
 use std::net::SocketAddr;
-
-use frame::{Frame, FrameDecoder, FrameEncoder};
-use util::{self, WebSocketKey};
-use {Error, ErrorKind, Result};
 
 const BUF_SIZE: usize = 4096;
 

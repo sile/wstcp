@@ -1,11 +1,7 @@
 #[macro_use]
 extern crate clap;
-extern crate fibers;
-extern crate futures;
-extern crate sloggers;
 #[macro_use]
 extern crate trackable;
-extern crate wstcp;
 
 use clap::Arg;
 use fibers::{Executor, Spawn, ThreadPoolExecutor};

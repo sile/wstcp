@@ -1,3 +1,5 @@
+use crate::opcode::Opcode;
+use crate::{Error, Result};
 use bytecodec::bytes::{BytesEncoder, CopyableBytesDecoder};
 use bytecodec::combinator::Slice;
 use bytecodec::io::StreamState;
@@ -5,9 +7,6 @@ use bytecodec::{self, ByteCount, Decode, Encode, Eos};
 use byteorder::{BigEndian, ByteOrder};
 use std::cmp;
 use std::io::{self, Read, Write};
-
-use opcode::Opcode;
-use {Error, Result};
 
 const FIN_FLAG: u8 = 0b1000_0000;
 const MASK_FLAG: u8 = 0b1000_0000;

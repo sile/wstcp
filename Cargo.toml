@@ -8,6 +8,7 @@ repository = "https://github.com/sile/wstcp"
 readme = "README.md"
 keywords = ["websocket", "proxy", "tcp"]
 license = "MIT"
+edition = "2018"
 
 [badges]
 travis-ci = {repository = "sile/wstcp"}

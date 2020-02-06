@@ -1,3 +1,5 @@
+use crate::channel::ProxyChannel;
+use crate::Error;
 use fibers::net::futures::{Connected, TcpListenerBind};
 use fibers::net::streams::Incoming;
 use fibers::net::TcpListener;
@@ -5,9 +7,6 @@ use fibers::Spawn;
 use futures::{Async, Future, Poll, Stream};
 use slog::Logger;
 use std::net::SocketAddr;
-
-use channel::ProxyChannel;
-use Error;
 
 /// WebSocket to TCP proxy server.
 #[derive(Debug)]
