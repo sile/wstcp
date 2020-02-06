@@ -14,11 +14,11 @@ use wstcp::ProxyServer;
 
 macro_rules! try_parse {
     ($expr:expr) => {
-        track_try_unwrap!(track_any_err!($expr.parse()))
+        track_any_err!($expr.parse())
     };
 }
 
-fn main() {
+fn main() -> trackable::result::TopLevelResult {
     let matches = app_from_crate!()
         .arg(
             Arg::with_name("REAL_SERVER_ADDR")
@@ -43,22 +43,25 @@ fn main() {
         )
         .get_matches();
 
-    let bind_addr: SocketAddr = try_parse!(matches.value_of("BIND_ADDR").unwrap());
-    let tcp_server_addr: SocketAddr = track_try_unwrap!(track_any_err!(matches
-        .value_of("REAL_SERVER_ADDR")
-        .unwrap()
-        .to_socket_addrs()))
-    .next()
-    .unwrap();
-    let log_level = try_parse!(matches.value_of("LOG_LEVEL").unwrap());
-    let logger = track_try_unwrap!(TerminalLoggerBuilder::new()
+    let bind_addr: SocketAddr = try_parse!(matches.value_of("BIND_ADDR").unwrap())?;
+    let tcp_server_addr: SocketAddr = track_assert_some!(
+        track_any_err!(matches
+            .value_of("REAL_SERVER_ADDR")
+            .unwrap()
+            .to_socket_addrs())?
+        .next(),
+        trackable::error::Failed
+    );
+    let log_level = try_parse!(matches.value_of("LOG_LEVEL").unwrap())?;
+    let logger = track!(TerminalLoggerBuilder::new()
         .source_location(SourceLocation::None)
         .destination(Destination::Stderr)
         .level(log_level)
-        .build());
+        .build())?;
 
-    let executor = track_try_unwrap!(track_any_err!(ThreadPoolExecutor::new()));
+    let executor = track_any_err!(ThreadPoolExecutor::new())?;
     let proxy = ProxyServer::new(logger, executor.handle(), bind_addr, tcp_server_addr);
     executor.spawn(proxy.map_err(|e| panic!("{}", e)));
-    track_try_unwrap!(track_any_err!(executor.run()))
+    track_any_err!(executor.run())?;
+    Ok(())
 }
