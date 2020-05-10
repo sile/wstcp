@@ -14,7 +14,7 @@ edition = "2018"
 travis-ci = {repository = "sile/wstcp"}
 
 [dependencies]
-base64 = "0.11"
+base64 = "0.12"
 bytecodec = "0.4"
 byteorder = "1"
 clap = "2"
