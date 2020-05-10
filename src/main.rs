@@ -4,8 +4,6 @@ extern crate clap;
 extern crate trackable;
 
 use clap::Arg;
-use fibers::{Executor, Spawn, ThreadPoolExecutor};
-use futures::Future;
 use sloggers::terminal::{Destination, TerminalLoggerBuilder};
 use sloggers::types::SourceLocation;
 use sloggers::Build;
@@ -59,9 +57,12 @@ fn main() -> trackable::result::TopLevelResult {
         .level(log_level)
         .build())?;
 
-    let executor = track_any_err!(ThreadPoolExecutor::new())?;
-    let proxy = ProxyServer::new(logger, executor.handle(), bind_addr, tcp_server_addr);
-    executor.spawn(proxy.map_err(|e| panic!("{}", e)));
-    track_any_err!(executor.run())?;
+    async_std::task::block_on(async {
+        let proxy = ProxyServer::new(logger, bind_addr, tcp_server_addr)
+            .await
+            .unwrap_or_else(|e| panic!("{}", e));
+        proxy.await.unwrap_or_else(|e| panic!("{}", e));
+    });
+
     Ok(())
 }
