@@ -16,10 +16,10 @@ Install
 A precompiled binary for Linux environment is available in the [releases] page.
 
 ```console
-$ curl -L https://github.com/sile/wstcp/releases/download/0.1.1/wstcp-0.1.1.linux -o wstcp
+$ curl -L https://github.com/sile/wstcp/releases/download/0.2.0/wstcp-0.2.0.linux -o wstcp
 $ chmod +x wstcp
 $ ./wstcp -h
-wstcp 0.1.1
+wstcp 0.2.0
 WebSocket to TCP proxy server
 
 USAGE:
@@ -61,7 +61,7 @@ Apr 22 23:21:20.717 INFO Starts a WebSocket proxy server, server_addr: 127.0.0.1
 Run a TCP server (in this example `nc` is used) in another terminal:
 
 ```console
-$ nc -l 127.0.0.1 3000
+$ nc -l 127.0.0.1 -p 3000
 ```
 
 Use [ws](https://github.com/hashrocket/ws) to launch a WebSocket client:
