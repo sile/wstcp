@@ -11,7 +11,7 @@ license = "MIT"
 edition = "2018"
 
 [badges]
-travis-ci = {repository = "sile/wstcp"}
+coveralls = {repository = "sile/wstcp"}
 
 [dependencies]
 async-std = "1.0"
