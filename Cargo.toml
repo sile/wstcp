@@ -15,12 +15,12 @@ travis-ci = {repository = "sile/wstcp"}
 
 [dependencies]
 async-std = "1.0"
-base64 = "0.12"
+base64 = "0.13"
 bytecodec = "0.4"
 byteorder = "1"
 clap = "2"
 httpcodec = "0.2"
-sha-1 = "0.8"
+sha-1 = "0.9"
 slog = {version = "2", features = ["release_max_level_debug"]}
-sloggers = "0.3"
-trackable = "0.2"
+sloggers = "2"
+trackable = "1"

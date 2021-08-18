@@ -8,8 +8,8 @@ pub struct WebSocketKey(pub String);
 
 pub fn calc_accept_hash(key: &WebSocketKey) -> String {
     let mut sh = Sha1::default();
-    sh.input(format!("{}{}", key.0, GUID).as_bytes());
-    let output = sh.result();
+    sh.update(format!("{}{}", key.0, GUID).as_bytes());
+    let output = sh.finalize();
     base64::encode(&output)
 }
 
