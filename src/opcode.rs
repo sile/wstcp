@@ -1,5 +1,3 @@
-use bytecodec;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Opcode {
     ContinuationFrame = 0x0,
@@ -23,9 +21,6 @@ impl Opcode {
     }
 
     pub fn is_control(&self) -> bool {
-        match *self {
-            Opcode::ConnectionClose | Opcode::Ping | Opcode::Pong => true,
-            _ => false,
-        }
+        matches!(self, Opcode::ConnectionClose | Opcode::Ping | Opcode::Pong)
     }
 }

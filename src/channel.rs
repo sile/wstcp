@@ -345,11 +345,7 @@ impl Handshake {
     }
 
     fn done(&self) -> bool {
-        if let Handshake::Done = *self {
-            true
-        } else {
-            false
-        }
+        matches!(self, Handshake::Done)
     }
 
     fn response_accepted(key: &WebSocketKey) -> Self {
