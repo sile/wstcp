@@ -349,7 +349,7 @@ impl Handshake {
     }
 
     fn response_accepted(key: &WebSocketKey) -> Self {
-        let hash = util::calc_accept_hash(&key);
+        let hash = util::calc_accept_hash(key);
 
         unsafe {
             let mut response = Response::new(
