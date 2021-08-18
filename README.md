@@ -1,7 +1,7 @@
 wstcp
 =====
 
-[![wstcp](http://meritbadge.herokuapp.com/wstcp)](https://crates.io/crates/wstcp)
+[![wstcp](https://img.shields.io/crates/v/wstcp.svg)](https://crates.io/crates/wstcp)
 [![Documentation](https://docs.rs/wstcp/badge.svg)](https://docs.rs/wstcp)
 [![Actions Status](https://github.com/sile/wstcp/workflows/CI/badge.svg)](https://github.com/sile/wstcp/actions)
 [![Coverage Status](https://coveralls.io/repos/github/sile/wstcp/badge.svg?branch=main)](https://coveralls.io/github/sile/wstcp?branch=main)
