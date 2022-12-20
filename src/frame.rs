@@ -23,7 +23,7 @@ pub enum Frame {
 
 #[derive(Debug, Clone)]
 struct FrameHeader {
-    fin_flag: bool,
+    _fin_flag: bool,
     opcode: Opcode,
     mask: Option<[u8; 4]>,
     payload_len: u64,
@@ -31,7 +31,7 @@ struct FrameHeader {
 impl FrameHeader {
     fn from_bytes(b: [u8; 2]) -> bytecodec::Result<Self> {
         let mut header = FrameHeader {
-            fin_flag: (b[0] & FIN_FLAG) != 0,
+            _fin_flag: (b[0] & FIN_FLAG) != 0,
             opcode: track!(Opcode::from_u8(b[0] & 0b1111))?,
             mask: None,
             payload_len: u64::from(b[1] & 0b0111_1111),

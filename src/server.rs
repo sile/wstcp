@@ -13,7 +13,7 @@ use std::task::Poll;
 #[derive(Debug)]
 pub struct ProxyServer {
     logger: Logger,
-    proxy_addr: SocketAddr,
+    _proxy_addr: SocketAddr,
     real_server_addr: SocketAddr,
     listener: TcpListener,
 }
@@ -31,7 +31,7 @@ impl ProxyServer {
         let listener = track!(TcpListener::bind(proxy_addr).await.map_err(Error::from))?;
         Ok(ProxyServer {
             logger,
-            proxy_addr,
+            _proxy_addr: proxy_addr,
             real_server_addr,
             listener,
         })
