@@ -117,7 +117,7 @@ impl Encode for FrameEncoder {
             buf.len() - offset,
             self.payload_length - self.payload_offset,
         );
-        (&mut buf[offset..][..size]).copy_from_slice(&self.payload[self.payload_offset..][..size]);
+        buf[offset..][..size].copy_from_slice(&self.payload[self.payload_offset..][..size]);
         self.payload_offset += size;
         if self.payload_offset == self.payload_length {
             self.payload_length = 0;
@@ -138,7 +138,7 @@ impl Encode for FrameEncoder {
                     bytecodec::ErrorKind::InvalidInput
                 );
                 BigEndian::write_u16(&mut self.payload, code);
-                (&mut self.payload[2..][..reason.len()]).copy_from_slice(&reason);
+                self.payload[2..][..reason.len()].copy_from_slice(&reason);
             }
             Frame::Pong { data } => {
                 track!(self.start_encoding_header(Opcode::Pong, data.len()))?;
@@ -147,7 +147,7 @@ impl Encode for FrameEncoder {
                     self.payload_length <= self.payload.len(),
                     bytecodec::ErrorKind::InvalidInput
                 );
-                (&mut self.payload[..data.len()]).copy_from_slice(&data);
+                self.payload[..data.len()].copy_from_slice(&data);
             }
             Frame::Ping { .. } | Frame::Data => unreachable!(),
         }
@@ -269,7 +269,7 @@ impl Decode for FramePayloadDecoder {
             let size =
                 cmp::min(header.payload_len - self.payload_offset, buf.len() as u64) as usize;
             let size = cmp::min(size, self.buf.len() - self.buf_end);
-            (&mut self.buf[self.buf_end..][..size]).copy_from_slice(&buf[..size]);
+            self.buf[self.buf_end..][..size].copy_from_slice(&buf[..size]);
             self.buf_end += size;
             self.payload_offset += size as u64;
             if let Some(mask) = header.mask {

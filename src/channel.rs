@@ -330,6 +330,7 @@ impl Future for ProxyChannel {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Handshake {
     RecvRequest(RequestDecoder<NoBodyDecoder>),
     ConnectToRealServer(
