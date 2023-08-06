@@ -3,12 +3,14 @@ extern crate clap;
 #[macro_use]
 extern crate trackable;
 
+use async_std::net::TcpListener;
 use clap::Arg;
+use slog::o;
 use sloggers::terminal::{Destination, TerminalLoggerBuilder};
 use sloggers::types::SourceLocation;
 use sloggers::Build;
 use std::net::{SocketAddr, ToSocketAddrs};
-use wstcp::ProxyServer;
+use wstcp::{Error, ProxyServer};
 
 macro_rules! try_parse {
     ($expr:expr) => {
@@ -58,7 +60,13 @@ fn main() -> trackable::result::TopLevelResult {
         .build())?;
 
     async_std::task::block_on(async {
-        let proxy = ProxyServer::new(logger, bind_addr, tcp_server_addr)
+        let logger = logger.new(
+            o!("proxy_addr" => bind_addr.to_string(), "server_addr" => tcp_server_addr.to_string()),
+        );
+        let listener = track!(TcpListener::bind(bind_addr).await.map_err(Error::from))
+            .expect("failed to start listening on the given proxy address");
+
+        let proxy = ProxyServer::new(logger, listener.incoming(), tcp_server_addr)
             .await
             .unwrap_or_else(|e| panic!("{}", e));
         proxy.await.unwrap_or_else(|e| panic!("{}", e));
