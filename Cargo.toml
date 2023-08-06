@@ -10,9 +10,6 @@ keywords = ["websocket", "proxy", "tcp"]
 license = "MIT"
 edition = "2018"
 
-[badges]
-coveralls = {repository = "sile/wstcp"}
-
 [dependencies]
 async-std = "1.0"
 base64 = "0.13"
