@@ -1,6 +1,6 @@
 use crate::channel::ProxyChannel;
 use crate::{Error, Result};
-use async_std::net::TcpListener;
+use async_std::net::Incoming;
 use async_std::stream::Stream;
 use slog::Logger;
 use std::future::Future;
@@ -11,39 +11,33 @@ use std::task::Poll;
 
 /// WebSocket to TCP proxy server.
 #[derive(Debug)]
-pub struct ProxyServer {
+pub struct ProxyServer<'a> {
     logger: Logger,
-    _proxy_addr: SocketAddr,
     real_server_addr: SocketAddr,
-    listener: TcpListener,
+    incoming: Incoming<'a>,
 }
-impl ProxyServer {
+impl<'a> ProxyServer<'a> {
     /// Makes a new `ProxyServer` instance.
     pub async fn new(
         logger: Logger,
-        proxy_addr: SocketAddr,
+        incoming: Incoming<'a>,
         real_server_addr: SocketAddr,
-    ) -> Result<Self> {
-        let logger = logger.new(
-            o!("proxy_addr" => proxy_addr.to_string(), "server_addr" => real_server_addr.to_string()),
-        );
+    ) -> Result<ProxyServer<'a>> {
         info!(logger, "Starts a WebSocket proxy server");
-        let listener = track!(TcpListener::bind(proxy_addr).await.map_err(Error::from))?;
         Ok(ProxyServer {
             logger,
-            _proxy_addr: proxy_addr,
             real_server_addr,
-            listener,
+            incoming,
         })
     }
 }
-impl Future for ProxyServer {
+impl<'a> Future for ProxyServer<'a> {
     type Output = Result<()>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = self.get_mut();
         loop {
-            match Pin::new(&mut this.listener.incoming()).poll_next(cx) {
+            match Pin::new(&mut this.incoming).poll_next(cx) {
                 Poll::Pending => {
                     break;
                 }
@@ -59,7 +53,7 @@ impl Future for ProxyServer {
                 }
                 Poll::Ready(Some(Ok(stream))) => {
                     let addr = stream.peer_addr()?;
-                    debug!(this.logger, "New client arrived: {}", addr);
+                    debug!(this.logger, "New client arrived: {:?}", addr);
 
                     let logger = this.logger.new(o!("client_addr" => addr.to_string()));
                     let channel = ProxyChannel::new(logger.clone(), stream, this.real_server_addr);
