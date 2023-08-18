@@ -15,7 +15,7 @@ async-std = "1.0"
 base64 = "0.13"
 bytecodec = "0.4"
 byteorder = "1"
-clap = "2"
+clap = { version = "4", features = ["derive"] }
 httpcodec = "0.2"
 sha-1 = "0.9"
 slog = {version = "2", features = ["release_max_level_debug"]}
