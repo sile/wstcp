@@ -16,8 +16,8 @@ base64 = "0.13"
 bytecodec = "0.4"
 byteorder = "1"
 clap = { version = "4", features = ["derive"] }
+env_logger = "0.10.0"
 httpcodec = "0.2"
+log = "0.4.20"
 sha-1 = "0.9"
-slog = {version = "2", features = ["release_max_level_debug"]}
-sloggers = "2"
 trackable = "1"

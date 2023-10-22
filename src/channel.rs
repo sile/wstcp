@@ -8,7 +8,6 @@ use httpcodec::{
     HeaderField, HttpVersion, NoBodyDecoder, NoBodyEncoder, ReasonPhrase, Request, RequestDecoder,
     Response, ResponseEncoder, StatusCode,
 };
-use slog::Logger;
 use std::future::Future;
 use std::mem;
 use std::net::SocketAddr;
@@ -20,7 +19,6 @@ const BUF_SIZE: usize = 4096;
 
 #[derive(Debug)]
 pub struct ProxyChannel {
-    logger: Logger,
     ws_stream: TcpStream,
     ws_rbuf: ReadBuf<Vec<u8>>,
     ws_wbuf: WriteBuf<Vec<u8>>,
@@ -36,11 +34,10 @@ pub struct ProxyChannel {
     frame_encoder: FrameEncoder,
 }
 impl ProxyChannel {
-    pub fn new(logger: Logger, ws_stream: TcpStream, real_server_addr: SocketAddr) -> Self {
+    pub fn new(ws_stream: TcpStream, real_server_addr: SocketAddr) -> Self {
         let _ = ws_stream.set_nodelay(true);
-        info!(logger, "New proxy channel is created");
+        log::info!("New proxy channel is created");
         ProxyChannel {
-            logger,
             ws_stream,
             ws_rbuf: ReadBuf::new(vec![0; BUF_SIZE]),
             ws_wbuf: WriteBuf::new(vec![0; BUF_SIZE]),
@@ -68,26 +65,23 @@ impl ProxyChannel {
                     }
                     match result.and_then(|()| decoder.finish_decoding()) {
                         Err(e) => {
-                            warn!(self.logger, "Malformed HTTP request: {}", e);
+                            log::warn!("Malformed HTTP request: {}", e);
                             self.handshake = Handshake::response_bad_request();
                         }
                         Ok(request) => {
-                            debug!(self.logger, "Received a WebSocket handshake request");
-                            debug!(self.logger, "Method: {}", request.method());
-                            debug!(self.logger, "Target: {}", request.request_target());
-                            debug!(self.logger, "Version: {}", request.http_version());
-                            debug!(self.logger, "Header: {}", request.header());
+                            log::debug!("Received a WebSocket handshake request");
+                            log::debug!("Method: {}", request.method());
+                            log::debug!("Target: {}", request.request_target());
+                            log::debug!("Version: {}", request.http_version());
+                            log::debug!("Header: {}", request.header());
 
                             match track!(self.handle_handshake_request(&request)) {
                                 Err(e) => {
-                                    warn!(
-                                        self.logger,
-                                        "Invalid WebSocket handshake request: {}", e
-                                    );
+                                    log::warn!("Invalid WebSocket handshake request: {}", e);
                                     self.handshake = Handshake::response_bad_request();
                                 }
                                 Ok(key) => {
-                                    debug!(self.logger, "Tries to connect the real server");
+                                    log::debug!("Tries to connect the real server");
                                     let future = TcpStream::connect(self.real_server_addr);
                                     self.handshake =
                                         Handshake::ConnectToRealServer(Box::pin(future), key);
@@ -103,15 +97,12 @@ impl ProxyChannel {
                             break;
                         }
                         Poll::Ready(Err(e)) => {
-                            warn!(self.logger, "Cannot connect to the real server: {}", e);
+                            log::warn!("Cannot connect to the real server: {}", e);
                             self.handshake = Handshake::response_unavailable();
                         }
                         Poll::Ready(Ok(stream)) => {
-                            debug!(self.logger, "Connected to the real server");
+                            log::debug!("Connected to the real server");
                             let _ = stream.set_nodelay(true);
-                            if let Ok(addr) = stream.local_addr() {
-                                self.logger = self.logger.new(o!("relay_addr" => addr.to_string()));
-                            }
                             self.handshake = Handshake::response_accepted(&key);
                             self.real_stream = Some(stream);
                         }
@@ -119,13 +110,13 @@ impl ProxyChannel {
                 }
                 Handshake::SendResponse(mut encoder, succeeded) => {
                     if let Err(e) = track!(encoder.encode_to_write_buf(&mut self.ws_wbuf)) {
-                        warn!(self.logger, "Cannot write a handshake response: {}", e);
+                        log::warn!("Cannot write a handshake response: {}", e);
                         return false;
                     }
                     if encoder.is_idle() {
-                        debug!(self.logger, "Handshake response has been written");
+                        log::debug!("Handshake response has been written");
                         if succeeded {
-                            info!(self.logger, "WebSocket handshake succeeded");
+                            log::info!("WebSocket handshake succeeded");
                             self.handshake = Handshake::Done;
                         } else {
                             return false;
@@ -173,11 +164,11 @@ impl ProxyChannel {
 
     fn process_relay(&mut self, cx: &mut Context) -> Result<()> {
         if let Err(e) = track!(self.handle_real_stream(cx)) {
-            warn!(self.logger, "{}", e);
+            log::warn!("{}", e);
             track!(self.starts_closing(1001, false))?;
         }
         if let Err(e) = track!(self.handle_ws_stream()) {
-            warn!(self.logger, "{}", e);
+            log::warn!("{}", e);
             track!(self.starts_closing(1002, false))?;
         }
         Ok(())
@@ -198,7 +189,7 @@ impl ProxyChannel {
     fn handle_ws_stream(&mut self) -> Result<()> {
         if self.frame_encoder.is_idle() {
             if let Some(data) = self.pending_pong.take() {
-                debug!(self.logger, "Sends Ping frame: {:?}", data);
+                log::debug!("Sends Ping frame: {:?}", data);
                 track!(self.frame_encoder.start_encoding(Frame::Pong { data }))?;
             }
         }
@@ -216,7 +207,7 @@ impl ProxyChannel {
         track!(self.frame_decoder.decode_from_read_buf(&mut self.ws_rbuf))?;
         if self.frame_decoder.is_idle() {
             let frame = track!(self.frame_decoder.finish_decoding())?;
-            debug!(self.logger, "Received frame: {:?}", frame);
+            log::debug!("Received frame: {:?}", frame);
             track!(self.handle_frame(frame))?;
         }
         Ok(())
@@ -225,8 +216,7 @@ impl ProxyChannel {
     fn handle_frame(&mut self, frame: Frame) -> Result<()> {
         match frame {
             Frame::ConnectionClose { code, reason } => {
-                info!(
-                    self.logger,
+                log::info!(
                     "Received Close frame: code={}, reason={:?}",
                     code,
                     String::from_utf8(reason)
@@ -296,13 +286,13 @@ impl Future for ProxyChannel {
             track!(this.ws_rbuf.fill(SyncReader::new(&mut this.ws_stream, cx)))?;
             track!(this.ws_wbuf.flush(SyncWriter::new(&mut this.ws_stream, cx)))?;
             if this.is_ws_stream_eos() {
-                info!(this.logger, "TCP stream for WebSocket has been closed");
+                log::info!("TCP stream for WebSocket has been closed");
                 return Poll::Ready(Ok(()));
             }
 
             // WebSocket handshake
             if !this.process_handshake(cx) {
-                warn!(this.logger, "WebSocket handshake cannot be completed");
+                log::warn!("WebSocket handshake cannot be completed");
                 return Poll::Ready(Ok(()));
             }
             if !this.handshake.done() {
@@ -313,14 +303,14 @@ impl Future for ProxyChannel {
             }
 
             if this.closing == Closing::Closed {
-                info!(this.logger, "WebSocket channel has been closed normally");
+                log::info!("WebSocket channel has been closed normally");
                 return Poll::Ready(Ok(()));
             }
 
             // Relay
             track!(this.process_relay(cx))?;
             if this.is_real_stream_eos() && this.closing.is_not_yet() {
-                info!(this.logger, "TCP stream for a real server has been closed");
+                log::info!("TCP stream for a real server has been closed");
                 track!(this.starts_closing(1000, false))?;
             }
             if this.would_ws_stream_block() && this.would_real_stream_block() {
