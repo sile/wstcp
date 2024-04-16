@@ -3,7 +3,7 @@ use crate::{Error, Result};
 use bytecodec::bytes::{BytesEncoder, CopyableBytesDecoder};
 use bytecodec::combinator::Slice;
 use bytecodec::io::StreamState;
-use bytecodec::{self, ByteCount, Decode, Encode, Eos};
+use bytecodec::{ByteCount, Decode, Encode, Eos};
 use byteorder::{BigEndian, ByteOrder};
 use std::cmp;
 use std::io::{self, Read, Write};
