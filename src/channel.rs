@@ -1,483 +1,229 @@
-use crate::frame::{Frame, FrameDecoder, FrameEncoder};
-use crate::util::{self, WebSocketKey};
-use crate::{Error, ErrorKind, Result};
-use async_std::net::TcpStream;
-use bytecodec::io::{IoDecodeExt, IoEncodeExt, ReadBuf, StreamState, WriteBuf};
-use bytecodec::{Decode, Encode, EncodeExt};
-use httpcodec::{
-    HeaderField, HttpVersion, NoBodyDecoder, NoBodyEncoder, ReasonPhrase, Request, RequestDecoder,
-    Response, ResponseEncoder, StatusCode,
+use crate::Error;
+use shiguredo_websocket::{
+    CloseCode, ConnectionEvent, ConnectionOutput, ServerConnectionOptions, TimerId,
+    WebSocketServerConnection,
 };
-use std::future::Future;
-use std::mem;
 use std::net::SocketAddr;
-use std::pin::Pin;
-use std::task::Context;
-use std::task::Poll;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::time::{Duration, Instant};
 
 const BUF_SIZE: usize = 4096;
+const REAL_SERVER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Debug)]
-pub struct ProxyChannel {
-    ws_stream: TcpStream,
-    ws_rbuf: ReadBuf<Vec<u8>>,
-    ws_wbuf: WriteBuf<Vec<u8>>,
-    real_server_addr: SocketAddr,
-    real_stream: Option<TcpStream>,
-    real_stream_rstate: StreamState,
-    real_stream_wstate: StreamState,
-    handshake: Handshake,
-    closing: Closing,
-    pending_pong: Option<Vec<u8>>,
-    pending_close: Option<Frame>,
-    frame_decoder: FrameDecoder,
-    frame_encoder: FrameEncoder,
-}
-impl ProxyChannel {
-    pub fn new(ws_stream: TcpStream, real_server_addr: SocketAddr) -> Self {
-        let _ = ws_stream.set_nodelay(true);
-        log::info!("New proxy channel is created");
-        ProxyChannel {
-            ws_stream,
-            ws_rbuf: ReadBuf::new(vec![0; BUF_SIZE]),
-            ws_wbuf: WriteBuf::new(vec![0; BUF_SIZE]),
-            real_server_addr,
-            real_stream: None,
-            real_stream_rstate: StreamState::Normal,
-            real_stream_wstate: StreamState::Normal,
-            handshake: Handshake::new(),
-            closing: Closing::NotYet,
-            pending_pong: None,
-            pending_close: None,
-            frame_decoder: FrameDecoder::default(),
-            frame_encoder: FrameEncoder::default(),
-        }
-    }
+pub async fn run(ws_stream: TcpStream, real_server_addr: SocketAddr) -> Result<(), Error> {
+    ws_stream.set_nodelay(true)?;
+    let (mut ws_reader, mut ws_writer) = ws_stream.into_split();
 
-    fn process_handshake(&mut self, cx: &mut Context) -> bool {
-        loop {
-            match mem::replace(&mut self.handshake, Handshake::Done) {
-                Handshake::RecvRequest(mut decoder) => {
-                    let result = decoder.decode_from_read_buf(&mut self.ws_rbuf);
-                    if result.is_ok() && !decoder.is_idle() {
-                        self.handshake = Handshake::RecvRequest(decoder);
-                        break;
-                    }
-                    match result.and_then(|()| decoder.finish_decoding()) {
-                        Err(e) => {
-                            log::warn!("Malformed HTTP request: {}", e);
-                            self.handshake = Handshake::response_bad_request();
-                        }
-                        Ok(request) => {
-                            log::debug!("Received a WebSocket handshake request");
-                            log::debug!("Method: {}", request.method());
-                            log::debug!("Target: {}", request.request_target());
-                            log::debug!("Version: {}", request.http_version());
-                            log::debug!("Header: {}", request.header());
+    let mut ws_conn = WebSocketServerConnection::new(ServerConnectionOptions::new());
+    let mut real_reader: Option<OwnedReadHalf> = None;
+    let mut real_writer: Option<OwnedWriteHalf> = None;
+    let mut timers = TimerManager::new();
+    let mut ws_buf = vec![0u8; BUF_SIZE];
+    let mut real_buf = vec![0u8; BUF_SIZE];
 
-                            match track!(self.handle_handshake_request(&request)) {
-                                Err(e) => {
-                                    log::warn!("Invalid WebSocket handshake request: {}", e);
-                                    self.handshake = Handshake::response_bad_request();
-                                }
-                                Ok(key) => {
-                                    log::debug!("Tries to connect the real server");
-                                    let future = TcpStream::connect(self.real_server_addr);
-                                    self.handshake =
-                                        Handshake::ConnectToRealServer(Box::pin(future), key);
-                                }
-                            }
-                        }
-                    }
+    log::info!("New proxy channel is created");
+
+    loop {
+        // 1. Drain pending outputs from the WebSocket state machine.
+        while let Some(output) = ws_conn.poll_output() {
+            match output {
+                ConnectionOutput::SendData(data) => {
+                    ws_writer.write_all(&data).await?;
                 }
-                Handshake::ConnectToRealServer(mut f, key) => {
-                    match Pin::new(&mut f).poll(cx).map_err(Error::from) {
-                        Poll::Pending => {
-                            self.handshake = Handshake::ConnectToRealServer(f, key);
-                            break;
-                        }
-                        Poll::Ready(Err(e)) => {
-                            log::warn!("Cannot connect to the real server: {}", e);
-                            self.handshake = Handshake::response_unavailable();
-                        }
-                        Poll::Ready(Ok(stream)) => {
-                            log::debug!("Connected to the real server");
-                            let _ = stream.set_nodelay(true);
-                            self.handshake = Handshake::response_accepted(&key);
-                            self.real_stream = Some(stream);
-                        }
-                    }
+                ConnectionOutput::SetTimer {
+                    id,
+                    duration_millis,
+                } => {
+                    timers.set(id, duration_millis);
                 }
-                Handshake::SendResponse(mut encoder, succeeded) => {
-                    if let Err(e) = track!(encoder.encode_to_write_buf(&mut self.ws_wbuf)) {
-                        log::warn!("Cannot write a handshake response: {}", e);
-                        return false;
-                    }
-                    if encoder.is_idle() {
-                        log::debug!("Handshake response has been written");
-                        if succeeded {
-                            log::info!("WebSocket handshake succeeded");
-                            self.handshake = Handshake::Done;
-                        } else {
-                            return false;
-                        }
-                    } else {
-                        self.handshake = Handshake::SendResponse(encoder, succeeded);
-                    }
-                    break;
+                ConnectionOutput::ClearTimer { id } => {
+                    timers.clear(id);
                 }
-                Handshake::Done => {
-                    break;
+                ConnectionOutput::CloseConnection => {
+                    log::info!("WebSocket channel has been closed");
+                    return Ok(());
                 }
             }
         }
-        true
-    }
 
-    fn handle_handshake_request(&mut self, request: &Request<()>) -> Result<WebSocketKey> {
-        track_assert_eq!(request.method().as_str(), "GET", ErrorKind::InvalidInput);
-        track_assert_eq!(
-            request.http_version(),
-            HttpVersion::V1_1,
-            ErrorKind::InvalidInput
-        );
-
-        let mut key = None;
-        for field in request.header().fields() {
-            let name = field.name();
-            let value = field.value();
-            if name.eq_ignore_ascii_case("upgrade") {
-                track_assert_eq!(value, "websocket", ErrorKind::InvalidInput);
-            } else if name.eq_ignore_ascii_case("connection") {
-                let mut values = value.split(',');
-                track_assert!(values.any(|v| v.trim() == "Upgrade"), ErrorKind::InvalidInput; value);
-            } else if name.eq_ignore_ascii_case("sec-websocket-key") {
-                key = Some(value.to_owned());
-            } else if name.eq_ignore_ascii_case("sec-websocket-version") {
-                track_assert_eq!(value, "13", ErrorKind::InvalidInput);
-            }
-        }
-
-        let key = track_assert_some!(key, ErrorKind::InvalidInput);
-        Ok(WebSocketKey(key))
-    }
-
-    fn process_relay(&mut self, cx: &mut Context) -> Result<()> {
-        if let Err(e) = track!(self.handle_real_stream(cx)) {
-            log::warn!("{}", e);
-            track!(self.starts_closing(1001, false))?;
-        }
-        if let Err(e) = track!(self.handle_ws_stream()) {
-            log::warn!("{}", e);
-            track!(self.starts_closing(1002, false))?;
-        }
-        Ok(())
-    }
-
-    fn handle_real_stream(&mut self, cx: &mut Context) -> Result<()> {
-        if let Some(stream) = self.real_stream.as_mut() {
-            self.real_stream_rstate = track!(self
-                .frame_encoder
-                .start_encoding_data(SyncReader::new(stream, cx)))?;
-            self.real_stream_wstate = track!(self
-                .frame_decoder
-                .write_decoded_data(SyncWriter::new(stream, cx)))?;
-        }
-        Ok(())
-    }
-
-    fn handle_ws_stream(&mut self) -> Result<()> {
-        if self.frame_encoder.is_idle() {
-            if let Some(data) = self.pending_pong.take() {
-                log::debug!("Sends Ping frame: {:?}", data);
-                track!(self.frame_encoder.start_encoding(Frame::Pong { data }))?;
-            }
-        }
-        if self.frame_encoder.is_idle() {
-            if let Some(frame) = self.pending_close.take() {
-                track!(self.frame_encoder.start_encoding(frame))?;
-            }
-        }
-
-        track!(self.frame_encoder.encode_to_write_buf(&mut self.ws_wbuf))?;
-        if self.frame_encoder.is_idle() && self.closing.is_client_closed() {
-            self.closing = Closing::Closed;
-        }
-
-        track!(self.frame_decoder.decode_from_read_buf(&mut self.ws_rbuf))?;
-        if self.frame_decoder.is_idle() {
-            let frame = track!(self.frame_decoder.finish_decoding())?;
-            log::debug!("Received frame: {:?}", frame);
-            track!(self.handle_frame(frame))?;
-        }
-        Ok(())
-    }
-
-    fn handle_frame(&mut self, frame: Frame) -> Result<()> {
-        match frame {
-            Frame::ConnectionClose { code, reason } => {
-                log::info!(
-                    "Received Close frame: code={}, reason={:?}",
-                    code,
-                    String::from_utf8(reason)
-                );
-                match self.closing {
-                    Closing::NotYet => {
-                        track!(self.starts_closing(code, true))?;
+        // 2. Process pending events.
+        while let Some(event) = ws_conn.poll_event() {
+            match event {
+                ConnectionEvent::Connected {
+                    protocol,
+                    extensions,
+                } => {
+                    log::info!(
+                        "WebSocket handshake succeeded, protocol: {protocol:?}, extensions: {extensions:?}"
+                    );
+                }
+                ConnectionEvent::BinaryMessage(data) => {
+                    if let Some(w) = real_writer.as_mut()
+                        && let Err(e) = w.write_all(&data).await
+                    {
+                        log::warn!("Real server write error: {e}");
+                        real_reader = None;
+                        real_writer = None;
+                        ws_conn.close(CloseCode::GOING_AWAY, "")?;
                     }
-                    Closing::InProgress {
-                        ref mut client_closed,
-                    } => {
-                        *client_closed = true;
+                }
+                ConnectionEvent::TextMessage(text) => {
+                    if let Some(w) = real_writer.as_mut()
+                        && let Err(e) = w.write_all(text.as_bytes()).await
+                    {
+                        log::warn!("Real server write error: {e}");
+                        real_reader = None;
+                        real_writer = None;
+                        ws_conn.close(CloseCode::GOING_AWAY, "")?;
                     }
-                    _ => track_panic!(ErrorKind::Other; self.closing),
+                }
+                ConnectionEvent::Close { code, reason } => {
+                    log::info!("Received Close frame: code={code:?}, reason={reason:?}");
+                    real_reader = None;
+                    real_writer = None;
+                }
+                ConnectionEvent::Ping(data) => {
+                    log::debug!("Received Ping frame: {data:?}");
+                }
+                ConnectionEvent::Pong(data) => {
+                    log::debug!("Received Pong frame: {data:?}");
+                }
+                ConnectionEvent::StateChanged(state) => {
+                    log::debug!("Connection state changed: {state:?}");
+                }
+                ConnectionEvent::Error(msg) => {
+                    log::warn!("WebSocket error event: {msg}");
                 }
             }
-            Frame::Ping { data } => {
-                if self.closing.is_not_yet() {
-                    self.pending_pong = Some(data);
-                }
-            }
-            Frame::Pong { .. } | Frame::Data => {}
         }
-        Ok(())
-    }
 
-    fn starts_closing(&mut self, code: u16, client_closed: bool) -> Result<()> {
-        track_assert_eq!(self.closing, Closing::NotYet, ErrorKind::Other);
-        self.real_stream = None;
-        self.real_stream_rstate = StreamState::Eos;
-        self.real_stream_wstate = StreamState::Eos;
-        self.closing = Closing::InProgress { client_closed };
-        self.pending_close = Some(Frame::ConnectionClose {
-            code,
-            reason: Vec::new(),
-        });
-        Ok(())
-    }
-
-    fn is_ws_stream_eos(&self) -> bool {
-        self.ws_rbuf.stream_state().is_eos() || self.ws_wbuf.stream_state().is_eos()
-    }
-
-    fn is_real_stream_eos(&self) -> bool {
-        self.real_stream_rstate.is_eos() || self.real_stream_wstate.is_eos()
-    }
-
-    fn would_ws_stream_block(&self) -> bool {
-        let empty_write =
-            self.ws_wbuf.is_empty() && self.pending_close.is_none() && self.pending_pong.is_none();
-        self.ws_rbuf.stream_state().would_block()
-            && (empty_write || self.ws_wbuf.stream_state().would_block())
-    }
-
-    fn would_real_stream_block(&self) -> bool {
-        self.real_stream_rstate.would_block()
-            && (self.frame_decoder.is_data_empty() || self.real_stream_wstate.would_block())
-    }
-}
-impl Future for ProxyChannel {
-    type Output = Result<()>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        loop {
-            // WebSocket TCP stream I/O
-            track!(this.ws_rbuf.fill(SyncReader::new(&mut this.ws_stream, cx)))?;
-            track!(this.ws_wbuf.flush(SyncWriter::new(&mut this.ws_stream, cx)))?;
-            if this.is_ws_stream_eos() {
-                log::info!("TCP stream for WebSocket has been closed");
-                return Poll::Ready(Ok(()));
-            }
-
-            // WebSocket handshake
-            if !this.process_handshake(cx) {
-                log::warn!("WebSocket handshake cannot be completed");
-                return Poll::Ready(Ok(()));
-            }
-            if !this.handshake.done() {
-                if this.would_ws_stream_block() {
-                    return Poll::Pending;
+        // 3. If the handshake request has arrived but not yet been accepted,
+        //    connect to the real server and accept or reject.
+        //
+        // Note: accept_handshake_auto() does not validate Origin/Path. wstcp
+        // is a transparent TCP proxy by design, so this is intentional, but
+        // it means CSWSH is possible in browser+cookie contexts.
+        if real_writer.is_none() && ws_conn.handshake_request().is_some() {
+            let connect = tokio::time::timeout(
+                REAL_SERVER_CONNECT_TIMEOUT,
+                TcpStream::connect(real_server_addr),
+            )
+            .await;
+            match connect {
+                Ok(Ok(real)) => {
+                    log::debug!("Connected to the real server");
+                    real.set_nodelay(true)?;
+                    let (r, w) = real.into_split();
+                    real_reader = Some(r);
+                    real_writer = Some(w);
+                    ws_conn.accept_handshake_auto()?;
                 }
-                continue;
+                Ok(Err(e)) => {
+                    log::warn!("Cannot connect to the real server: {e}");
+                    ws_conn.reject_handshake(503, "Service Unavailable", &[])?;
+                }
+                Err(_) => {
+                    log::warn!(
+                        "Timed out connecting to the real server after {:?}",
+                        REAL_SERVER_CONNECT_TIMEOUT
+                    );
+                    ws_conn.reject_handshake(504, "Gateway Timeout", &[])?;
+                }
             }
+            continue;
+        }
 
-            if this.closing == Closing::Closed {
-                log::info!("WebSocket channel has been closed normally");
-                return Poll::Ready(Ok(()));
+        // 4. Wait for the next event (WebSocket bytes, real-server bytes, or timer).
+        tokio::select! {
+            result = ws_reader.read(&mut ws_buf) => {
+                let n = result?;
+                if n == 0 {
+                    log::info!("TCP stream for WebSocket has been closed");
+                    return Ok(());
+                }
+                ws_conn.feed_recv_buf(&ws_buf[..n])?;
             }
-
-            // Relay
-            track!(this.process_relay(cx))?;
-            if this.is_real_stream_eos() && this.closing.is_not_yet() {
-                log::info!("TCP stream for a real server has been closed");
-                track!(this.starts_closing(1000, false))?;
+            result = read_optional(real_reader.as_mut(), &mut real_buf) => {
+                match result {
+                    Ok(0) => {
+                        log::info!("TCP stream for a real server has been closed");
+                        real_reader = None;
+                        real_writer = None;
+                        ws_conn.close(CloseCode::NORMAL, "")?;
+                    }
+                    Ok(n) => {
+                        ws_conn.send_binary(&real_buf[..n])?;
+                    }
+                    Err(e) => {
+                        log::warn!("Real server read error: {e}");
+                        real_reader = None;
+                        real_writer = None;
+                        ws_conn.close(CloseCode::GOING_AWAY, "")?;
+                    }
+                }
             }
-            if this.would_ws_stream_block() && this.would_real_stream_block() {
-                return Poll::Pending;
+            _ = timers.wait_next() => {
+                for id in timers.expired() {
+                    ws_conn.handle_timer(id)?;
+                }
             }
         }
     }
 }
 
-#[allow(clippy::large_enum_variant)]
-enum Handshake {
-    RecvRequest(RequestDecoder<NoBodyDecoder>),
-    ConnectToRealServer(
-        Pin<Box<dyn Future<Output = async_std::io::Result<TcpStream>> + Send + 'static>>,
-        WebSocketKey,
-    ),
-    SendResponse(ResponseEncoder<NoBodyEncoder>, bool),
-    Done,
+async fn read_optional(
+    reader: Option<&mut OwnedReadHalf>,
+    buf: &mut [u8],
+) -> std::io::Result<usize> {
+    match reader {
+        Some(r) => r.read(buf).await,
+        None => std::future::pending().await,
+    }
 }
-impl Handshake {
+
+struct TimerManager {
+    timers: Vec<(TimerId, Instant)>,
+}
+
+impl TimerManager {
     fn new() -> Self {
-        Handshake::RecvRequest(RequestDecoder::default())
+        Self { timers: Vec::new() }
     }
 
-    fn done(&self) -> bool {
-        matches!(self, Handshake::Done)
+    fn set(&mut self, id: TimerId, duration_millis: u64) {
+        let deadline = Instant::now() + Duration::from_millis(duration_millis);
+        self.timers.retain(|(tid, _)| *tid != id);
+        self.timers.push((id, deadline));
     }
 
-    fn response_accepted(key: &WebSocketKey) -> Self {
-        let hash = util::calc_accept_hash(key);
+    fn clear(&mut self, id: TimerId) {
+        self.timers.retain(|(tid, _)| *tid != id);
+    }
 
-        unsafe {
-            let mut response = Response::new(
-                HttpVersion::V1_1,
-                StatusCode::new_unchecked(101),
-                ReasonPhrase::new_unchecked("Switching Protocols"),
-                (),
-            );
-            response
-                .header_mut()
-                .add_field(HeaderField::new_unchecked("Upgrade", "websocket"))
-                .add_field(HeaderField::new_unchecked("Connection", "Upgrade"))
-                .add_field(HeaderField::new_unchecked("Sec-WebSocket-Accept", &hash));
+    fn next_deadline(&self) -> Option<Instant> {
+        self.timers.iter().map(|(_, d)| *d).min()
+    }
 
-            let encoder = ResponseEncoder::with_item(response).expect("Never fails");
-            Handshake::SendResponse(encoder, true)
+    async fn wait_next(&self) {
+        match self.next_deadline() {
+            Some(deadline) => tokio::time::sleep_until(deadline).await,
+            None => std::future::pending().await,
         }
     }
 
-    fn response_bad_request() -> Self {
-        unsafe {
-            let mut response = Response::new(
-                HttpVersion::V1_1,
-                StatusCode::new_unchecked(400),
-                ReasonPhrase::new_unchecked("Bad Request"),
-                (),
-            );
-            response
-                .header_mut()
-                .add_field(HeaderField::new_unchecked("Content-Length", "0"));
-            let encoder = ResponseEncoder::with_item(response).expect("Never fails");
-            Handshake::SendResponse(encoder, false)
-        }
-    }
-
-    fn response_unavailable() -> Self {
-        unsafe {
-            let mut response = Response::new(
-                HttpVersion::V1_1,
-                StatusCode::new_unchecked(503),
-                ReasonPhrase::new_unchecked("Service Unavailable"),
-                (),
-            );
-            response
-                .header_mut()
-                .add_field(HeaderField::new_unchecked("Content-Length", "0"));
-            let encoder = ResponseEncoder::with_item(response).expect("Never fails");
-            Handshake::SendResponse(encoder, false)
-        }
-    }
-}
-
-impl std::fmt::Debug for Handshake {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "Handshake {{ .. }}")
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum Closing {
-    NotYet,
-    InProgress { client_closed: bool },
-    Closed,
-}
-impl Closing {
-    fn is_not_yet(&self) -> bool {
-        *self == Closing::NotYet
-    }
-
-    fn is_client_closed(&self) -> bool {
-        *self
-            == Closing::InProgress {
-                client_closed: true,
+    fn expired(&mut self) -> Vec<TimerId> {
+        let now = Instant::now();
+        let mut out = Vec::new();
+        self.timers.retain(|(id, deadline)| {
+            if *deadline <= now {
+                out.push(*id);
+                false
+            } else {
+                true
             }
-    }
-}
-
-#[derive(Debug)]
-struct SyncReader<'a, 'b, 'c, T> {
-    inner: &'a mut T,
-    cx: &'b mut Context<'c>,
-}
-
-impl<'a, 'b, 'c, T: async_std::io::Read> SyncReader<'a, 'b, 'c, T> {
-    fn new(inner: &'a mut T, cx: &'b mut Context<'c>) -> Self {
-        Self { inner, cx }
-    }
-}
-
-impl<'a, 'b, 'c, T> std::io::Read for SyncReader<'a, 'b, 'c, T>
-where
-    T: async_std::io::Read + std::marker::Unpin,
-{
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match Pin::new(&mut *self.inner).poll_read(self.cx, buf) {
-            Poll::Pending => Err(std::io::Error::new(
-                std::io::ErrorKind::WouldBlock,
-                "Would block",
-            )),
-            Poll::Ready(result) => result,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct SyncWriter<'a, 'b, 'c, T> {
-    inner: &'a mut T,
-    cx: &'b mut Context<'c>,
-}
-
-impl<'a, 'b, 'c, T: async_std::io::Write> SyncWriter<'a, 'b, 'c, T> {
-    fn new(inner: &'a mut T, cx: &'b mut Context<'c>) -> Self {
-        Self { inner, cx }
-    }
-}
-
-impl<'a, 'b, 'c, T> std::io::Write for SyncWriter<'a, 'b, 'c, T>
-where
-    T: async_std::io::Write + std::marker::Unpin,
-{
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        match Pin::new(&mut *self.inner).poll_write(self.cx, buf) {
-            Poll::Pending => Err(std::io::Error::new(
-                std::io::ErrorKind::WouldBlock,
-                "Would block",
-            )),
-            Poll::Ready(result) => result,
-        }
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        match Pin::new(&mut *self.inner).poll_flush(self.cx) {
-            Poll::Pending => Err(std::io::Error::new(
-                std::io::ErrorKind::WouldBlock,
-                "Would block",
-            )),
-            Poll::Ready(result) => result,
-        }
+        });
+        out
     }
 }

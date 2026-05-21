@@ -8,16 +8,12 @@ repository = "https://github.com/sile/wstcp"
 readme = "README.md"
 keywords = ["websocket", "proxy", "tcp"]
 license = "MIT"
-edition = "2018"
+edition = "2024"
+rust-version = "1.88"
 
 [dependencies]
-async-std = "1.0"
-base64 = "0.22"
-bytecodec = "0.4"
-byteorder = "1"
-clap = { version = "4", features = ["derive"] }
-env_logger = "0.11.0"
-httpcodec = "0.2"
-log = "0.4.20"
-sha-1 = "0.10"
-trackable = "1"
+env_logger = "0.11"
+log = "0.4"
+noargs = "0.4"
+shiguredo_websocket = "2026"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "time"] }
