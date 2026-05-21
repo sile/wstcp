@@ -287,6 +287,61 @@ async fn test_real_server_closes_first() {
     }
 }
 
+async fn unreachable_addr() -> SocketAddr {
+    // Bind a listener, capture the address, then drop the listener so the
+    // port refuses incoming connections.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    addr
+}
+
+#[tokio::test]
+async fn test_reject_when_real_server_unreachable() {
+    // When the real server can't be reached, the proxy must reject the
+    // WebSocket handshake with HTTP 503 rather than crashing or hanging.
+    let real_addr = unreachable_addr().await;
+    let proxy_addr = start_proxy(real_addr).await;
+
+    let mut stream = TcpStream::connect(proxy_addr).await.unwrap();
+    let request = "\
+GET / HTTP/1.1\r\n\
+Host: 127.0.0.1\r\n\
+Upgrade: websocket\r\n\
+Connection: Upgrade\r\n\
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+Sec-WebSocket-Version: 13\r\n\
+\r\n";
+    stream.write_all(request.as_bytes()).await.unwrap();
+
+    let mut response = Vec::new();
+    let result = timeout(Duration::from_secs(5), async {
+        let mut buf = [0u8; 1024];
+        loop {
+            let n = stream.read(&mut buf).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            response.extend_from_slice(&buf[..n]);
+            if response.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+    })
+    .await;
+
+    assert!(result.is_ok(), "timed out reading proxy response");
+    let status_line = std::str::from_utf8(&response)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap();
+    assert!(
+        status_line.starts_with("HTTP/1.1 503"),
+        "expected 503 status, got: {status_line}"
+    );
+}
+
 #[tokio::test]
 async fn test_concurrent_connections() {
     // Several clients use the same proxy in parallel. Catches accidental

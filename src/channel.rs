@@ -10,6 +10,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::time::{Duration, Instant};
 
 const BUF_SIZE: usize = 4096;
+const REAL_SERVER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn run(ws_stream: TcpStream, real_server_addr: SocketAddr) -> Result<(), Error> {
     ws_stream.set_nodelay(true)?;
@@ -59,13 +60,23 @@ pub async fn run(ws_stream: TcpStream, real_server_addr: SocketAddr) -> Result<(
                     );
                 }
                 ConnectionEvent::BinaryMessage(data) => {
-                    if let Some(w) = real_writer.as_mut() {
-                        w.write_all(&data).await?;
+                    if let Some(w) = real_writer.as_mut()
+                        && let Err(e) = w.write_all(&data).await
+                    {
+                        log::warn!("Real server write error: {e}");
+                        real_reader = None;
+                        real_writer = None;
+                        ws_conn.close(CloseCode::GOING_AWAY, "")?;
                     }
                 }
                 ConnectionEvent::TextMessage(text) => {
-                    if let Some(w) = real_writer.as_mut() {
-                        w.write_all(text.as_bytes()).await?;
+                    if let Some(w) = real_writer.as_mut()
+                        && let Err(e) = w.write_all(text.as_bytes()).await
+                    {
+                        log::warn!("Real server write error: {e}");
+                        real_reader = None;
+                        real_writer = None;
+                        ws_conn.close(CloseCode::GOING_AWAY, "")?;
                     }
                 }
                 ConnectionEvent::Close { code, reason } => {
@@ -90,9 +101,18 @@ pub async fn run(ws_stream: TcpStream, real_server_addr: SocketAddr) -> Result<(
 
         // 3. If the handshake request has arrived but not yet been accepted,
         //    connect to the real server and accept or reject.
+        //
+        // Note: accept_handshake_auto() does not validate Origin/Path. wstcp
+        // is a transparent TCP proxy by design, so this is intentional, but
+        // it means CSWSH is possible in browser+cookie contexts.
         if real_writer.is_none() && ws_conn.handshake_request().is_some() {
-            match TcpStream::connect(real_server_addr).await {
-                Ok(real) => {
+            let connect = tokio::time::timeout(
+                REAL_SERVER_CONNECT_TIMEOUT,
+                TcpStream::connect(real_server_addr),
+            )
+            .await;
+            match connect {
+                Ok(Ok(real)) => {
                     log::debug!("Connected to the real server");
                     real.set_nodelay(true)?;
                     let (r, w) = real.into_split();
@@ -100,9 +120,16 @@ pub async fn run(ws_stream: TcpStream, real_server_addr: SocketAddr) -> Result<(
                     real_writer = Some(w);
                     ws_conn.accept_handshake_auto()?;
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     log::warn!("Cannot connect to the real server: {e}");
                     ws_conn.reject_handshake(503, "Service Unavailable", &[])?;
+                }
+                Err(_) => {
+                    log::warn!(
+                        "Timed out connecting to the real server after {:?}",
+                        REAL_SERVER_CONNECT_TIMEOUT
+                    );
+                    ws_conn.reject_handshake(504, "Gateway Timeout", &[])?;
                 }
             }
             continue;
