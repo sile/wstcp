@@ -15,10 +15,10 @@ jobs:
         run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
 
       - name: Checkout sources
-        uses: actions/checkout@v1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
+        uses: actions-rs/toolchain@b2417cde72dcf67f306c0ae8e0828a81bf0b189f # v1.0.6
         with:
           profile: minimal
           toolchain: stable
@@ -26,13 +26,13 @@ jobs:
           override: true
 
       - name: Run cargo build
-        uses: actions-rs/cargo@v1
+        uses: actions-rs/cargo@ae10961054e4aa8b4aa7dffede299aaf087aa33b # v1.0.1
         with:
           command: build
           args: --release --target=x86_64-unknown-linux-musl
 
       - id: create-release
-        uses: actions/create-release@v1
+        uses: actions/create-release@0cb9c9b65d5d1901c1f53e5e66eaf4afd303e70e # v1.1.4
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -41,7 +41,7 @@ jobs:
           draft: false
           prerelease: false
 
-      - uses: actions/upload-release-asset@v1.0.1
+      - uses: actions/upload-release-asset@e8f9f06c4b078e705bd2ea027f0926603fc9b4d5 # v1.0.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
