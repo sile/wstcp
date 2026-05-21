@@ -324,7 +324,7 @@ impl Future for ProxyChannel {
 enum Handshake {
     RecvRequest(RequestDecoder<NoBodyDecoder>),
     ConnectToRealServer(
-        Pin<Box<(dyn Future<Output = async_std::io::Result<TcpStream>> + Send + 'static)>>,
+        Pin<Box<dyn Future<Output = async_std::io::Result<TcpStream>> + Send + 'static >>,
         WebSocketKey,
     ),
     SendResponse(ResponseEncoder<NoBodyEncoder>, bool),
