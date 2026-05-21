@@ -18,23 +18,28 @@ A precompiled binary for Linux environment is available in the [releases] page.
 ```console
 $ curl -L https://github.com/sile/wstcp/releases/download/0.2.0/wstcp-0.2.0.linux -o wstcp
 $ chmod +x wstcp
-$ ./wstcp -h
-wstcp 0.2.0
+$ ./wstcp --help
 WebSocket to TCP proxy server
 
-USAGE:
-    wstcp [OPTIONS] <REAL_SERVER_ADDR>
+Usage: wstcp [OPTIONS] <REAL_SERVER_ADDR>
 
-FLAGS:
-    -h, --help       Prints help information
-    -V, --version    Prints version information
+Example:
+  $ wstcp 127.0.0.1:3000
 
-OPTIONS:
-        --bind-addr <BIND_ADDR>    TCP address to which the WebSocket proxy bind [default: 0.0.0.0:13892]
-        --log-level <LOG_LEVEL>     [default: info]  [possible values: debug, info, warning, error]
+Arguments:
+  <REAL_SERVER_ADDR>
+    The TCP address of the real server
 
-ARGS:
-    <REAL_SERVER_ADDR>    The TCP address of the real server
+Options:
+  --version
+    Print version
+
+  --help, -h
+    Print help ('--help' for full help, '-h' for summary)
+
+  --bind-addr <ADDR>
+    TCP address to which the WebSocket proxy binds
+    [default: 0.0.0.0:13892]
 ```
 
 ### Using Cargo
@@ -51,11 +56,11 @@ $ cargo install wstcp
 Examples
 ---------
 
-Run `wstcp` in a terminal:
+Run `wstcp` in a terminal (set `RUST_LOG` to see info-level logs):
 
 ```console
-$ wstcp 127.0.0.1:3000
-Apr 22 23:21:20.717 INFO Starts a WebSocket proxy server, server_addr: 127.0.0.1:3000, proxy_addr: 0.0.0.0:13892
+$ RUST_LOG=info wstcp 127.0.0.1:3000
+[2026-05-22T12:00:00Z INFO  wstcp::server] Starts a WebSocket proxy server, bind_addr: 0.0.0.0:13892, real_server_addr: 127.0.0.1:3000
 ```
 
 Run a TCP server (in this example `nc` is used) in another terminal:
