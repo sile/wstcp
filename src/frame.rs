@@ -395,9 +395,10 @@ impl FrameDecoder {
     }
 
     pub fn is_data_empty(&self) -> bool {
-        self.payload.header.as_ref().is_none_or(|h| {
-            h.opcode.is_control() || self.payload.buf_start == self.payload.buf_end
-        })
+        self.payload
+            .header
+            .as_ref()
+            .is_none_or(|h| h.opcode.is_control() || self.payload.buf_start == self.payload.buf_end)
     }
 }
 impl Decode for FrameDecoder {
