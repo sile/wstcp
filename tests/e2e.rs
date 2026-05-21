@@ -184,3 +184,138 @@ async fn test_close_handshake() {
         "did not receive Close event within timeout"
     );
 }
+
+#[tokio::test]
+async fn test_text_message() {
+    // Exercises the TextMessage branch in channel.rs: the proxy must forward
+    // the UTF-8 bytes of a text frame to the TCP backend.
+    let echo_addr = start_echo_server().await;
+    let proxy_addr = start_proxy(echo_addr).await;
+
+    let (mut conn, mut stream) = ws_connect(proxy_addr).await;
+
+    conn.send_text("hello, text!").unwrap();
+    flush_outputs(&mut conn, &mut stream).await;
+
+    // The TCP echo server returns the raw bytes, so the proxy re-frames them
+    // as binary on the way back.
+    let event = feed_until_event(&mut conn, &mut stream, |e| {
+        matches!(e, ConnectionEvent::BinaryMessage(_))
+    })
+    .await;
+
+    match event {
+        Some(ConnectionEvent::BinaryMessage(data)) => {
+            assert_eq!(data, b"hello, text!");
+        }
+        other => panic!("expected BinaryMessage echo, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_large_payload() {
+    // 64KB payload — well above the 4KB internal read buffer, so the relay
+    // arrives as multiple BinaryMessage events that must reassemble exactly.
+    let echo_addr = start_echo_server().await;
+    let proxy_addr = start_proxy(echo_addr).await;
+
+    let (mut conn, mut stream) = ws_connect(proxy_addr).await;
+
+    let payload: Vec<u8> = (0..65536).map(|i| (i % 256) as u8).collect();
+    conn.send_binary(&payload).unwrap();
+    flush_outputs(&mut conn, &mut stream).await;
+
+    let mut received: Vec<u8> = Vec::new();
+    let mut buf = vec![0u8; 4096];
+    let result = timeout(Duration::from_secs(5), async {
+        while received.len() < payload.len() {
+            while let Some(event) = conn.poll_event() {
+                if let ConnectionEvent::BinaryMessage(data) = event {
+                    received.extend_from_slice(&data);
+                }
+            }
+            if received.len() >= payload.len() {
+                break;
+            }
+            let n = stream.read(&mut buf).await.unwrap();
+            assert!(n > 0, "unexpected EOF from proxy");
+            conn.feed_recv_buf(&buf[..n], now()).unwrap();
+            flush_outputs(&mut conn, &mut stream).await;
+        }
+    })
+    .await;
+
+    assert!(result.is_ok(), "timed out waiting for echoed data");
+    assert_eq!(received, payload);
+}
+
+async fn start_immediate_close_server() -> SocketAddr {
+    // Accepts a connection then drops the stream immediately, so the proxy
+    // observes an EOF on the real-side reader.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            drop(stream);
+        }
+    });
+    addr
+}
+
+#[tokio::test]
+async fn test_real_server_closes_first() {
+    // The real TCP server closes its end. The proxy should send a Close frame
+    // to the WebSocket client.
+    let real_addr = start_immediate_close_server().await;
+    let proxy_addr = start_proxy(real_addr).await;
+
+    let (mut conn, mut stream) = ws_connect(proxy_addr).await;
+
+    let event = feed_until_event(&mut conn, &mut stream, |e| {
+        matches!(e, ConnectionEvent::Close { .. })
+    })
+    .await;
+
+    match event {
+        Some(ConnectionEvent::Close { code, .. }) => {
+            assert_eq!(code, Some(CloseCode::NORMAL));
+        }
+        other => panic!("expected Close event, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_concurrent_connections() {
+    // Several clients use the same proxy in parallel. Catches accidental
+    // sharing of per-connection state across tasks.
+    let echo_addr = start_echo_server().await;
+    let proxy_addr = start_proxy(echo_addr).await;
+
+    let mut handles = Vec::new();
+    for i in 0..5u8 {
+        let handle = tokio::spawn(async move {
+            let (mut conn, mut stream) = ws_connect(proxy_addr).await;
+            let payload = vec![i; 32];
+            conn.send_binary(&payload).unwrap();
+            flush_outputs(&mut conn, &mut stream).await;
+
+            let event = feed_until_event(&mut conn, &mut stream, |e| {
+                matches!(e, ConnectionEvent::BinaryMessage(_))
+            })
+            .await;
+
+            match event {
+                Some(ConnectionEvent::BinaryMessage(data)) => assert_eq!(data, payload),
+                other => panic!("client {i}: expected BinaryMessage, got {:?}", other),
+            }
+        });
+        handles.push(handle);
+    }
+
+    for h in handles {
+        h.await.unwrap();
+    }
+}
